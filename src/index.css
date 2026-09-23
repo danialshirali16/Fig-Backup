@@ -1,0 +1,117 @@
+@import 'tailwindcss';
+@import 'tw-animate-css';
+@import 'shadcn/tailwind.css';
+@import './styles/style-nova.css' layer(base);
+@import './figma-theme.css';
+
+/*
+  shadcn/ui "nova" style on Tailwind v4, with the @create-figma-plugin/ui theme:
+  every color below is wired to a --figma-color-* token (see figma-theme.css),
+  so light/dark flip automatically with the token blocks (:root / :root.dark).
+  Font tokens from the library's base.css:
+    --font-family: 'Inter', 'Helvetica', sans-serif
+*/
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  --background: var(--figma-color-bg);
+  --foreground: var(--figma-color-text);
+  --card: var(--figma-color-bg);
+  --card-foreground: var(--figma-color-text);
+  --popover: var(--figma-color-bg);
+  --popover-foreground: var(--figma-color-text);
+  /* Figma brand button: bg-brand + text-onbrand */
+  --primary: color-mix(in srgb, var(--figma-color-bg-brand) 76%, black);
+  --primary-hover: color-mix(in srgb, var(--figma-color-bg-brand) 66%, black);
+  --primary-foreground: var(--figma-color-text-onbrand);
+  --brand-text: color-mix(in srgb, var(--figma-color-text-brand) 88%, black);
+  --secondary: var(--figma-color-bg-secondary);
+  --secondary-foreground: var(--figma-color-text);
+  --muted: var(--figma-color-bg-secondary);
+  --muted-foreground: color-mix(in srgb, var(--figma-color-text-secondary) 80%, black);
+  --accent: var(--figma-color-bg-hover);
+  --accent-foreground: var(--figma-color-text);
+  /* Soft danger surfaces: paired with figma's danger wash + border tokens */
+  --destructive: color-mix(in srgb, var(--figma-color-text-danger) 80%, black);
+  --destructive-foreground: var(--figma-color-text-ondanger);
+  --border: var(--figma-color-border);
+  --input: var(--figma-color-border);
+  --ring: var(--primary);
+  --success: color-mix(in srgb, var(--figma-color-text-success) 72%, black);
+  /* Sidebar tokens (unused in-app, required by shadcn/tailwind.css utilities) */
+  --sidebar: var(--figma-color-bg-secondary);
+  --sidebar-foreground: var(--figma-color-text);
+  --sidebar-accent: var(--figma-color-bg-hover);
+  --sidebar-accent-foreground: var(--figma-color-text);
+  --sidebar-border: var(--figma-color-border);
+  --sidebar-ring: var(--figma-color-bg-brand);
+  --radius: 0.625rem;
+}
+
+:root.dark {
+  --brand-text: var(--figma-color-text-brand);
+  --muted-foreground: var(--figma-color-text-secondary);
+  --destructive: var(--figma-color-text-danger);
+  --success: var(--figma-color-text-success);
+  --ring: var(--figma-color-text-brand);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-brand-text: var(--brand-text);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-success: var(--success);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+  /* Font tokens from @create-figma-plugin/ui base.css */
+  --font-sans: 'Inter', 'Helvetica', sans-serif;
+  --font-mono: 'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas', 'Liberation Mono', 'Courier New', monospace;
+  --radius-lg: var(--radius);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-sm: calc(var(--radius) - 4px);
+}
+
+@layer base {
+  * { @apply border-border; }
+
+  html { color-scheme: light; }
+  html.dark { color-scheme: dark; }
+
+  body { @apply bg-background text-foreground font-sans antialiased; }
+
+  .cn-button-variant-default:hover { background-color: var(--primary-hover); }
+
+  ::selection { background-color: var(--figma-color-bg-onselected); }
+
+  /* RTL: progress fills from the trailing side like native RTL progress bars */
+  [dir='rtl'] [data-slot='progress'] { transform: scaleX(-1); }
+  /* RTL: select check indicator sits on the start side */
+  [dir='rtl'] .cn-select-item-indicator { right: auto; left: 0.5rem; }
+}
+
+/* Keep the macOS traffic lights clear when the web header fills the titlebar. */
+@media (max-width: 840px) {
+  .native-mac-titlebar .app-header-inner { padding-left: 96px; }
+}

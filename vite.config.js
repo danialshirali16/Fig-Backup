@@ -1,9 +1,11 @@
 import { defineConfig } from 'vite'
+import tailwindcss from '@tailwindcss/vite'
 import { resolve } from 'node:path'
 
 export default defineConfig({
   base: './',
-  esbuild: { jsxFactory: 'h', jsxFragment: 'Fragment' },
-  resolve: { alias: { '!../css/base.css': resolve('node_modules/@create-figma-plugin/ui/lib/css/base.css') } },
+  esbuild: { jsx: 'automatic' },
+  plugins: [tailwindcss()],
+  resolve: { alias: { '@': resolve(__dirname, 'src') } },
   build: { outDir: 'dist', emptyOutDir: true },
 })

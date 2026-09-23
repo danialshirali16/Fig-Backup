@@ -45,6 +45,13 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(team_id_from_input('https://www.figma.com/team/1558645977231861977/abc'), '1558645977231861977')
         self.assertEqual(merge_teams([{'id': '1', 'name': '1'}], [{'id': '1', 'name': 'Danny'}]), [{'id': '1', 'name': 'Danny'}])
 
+    def test_team_avatar_survives_refresh_without_a_new_image(self):
+        saved = [{'id': '1', 'name': 'Old name', 'avatar': 'data:image/png;base64,YQ=='}]
+        refreshed = [{'id': '1', 'name': 'New name'}]
+        self.assertEqual(merge_teams(saved, refreshed), [
+            {'id': '1', 'name': 'New name', 'avatar': 'data:image/png;base64,YQ=='}
+        ])
+
     def test_collision_names_and_existing_index(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -109,6 +116,17 @@ class CoreTests(unittest.TestCase):
         with self.assertRaises(FigmaError) as raised:
             client.files('20')
         self.assertEqual(raised.exception.status, 403)
+
+    def test_non_json_success_response(self):
+        class BadResponse(Response):
+            def json(self):
+                raise ValueError('Expecting value: line 1 column 1 (char 0)')
+
+        client = FigmaClient('dummy', lambda *_args, **_kwargs: BadResponse(200, None))
+        with self.assertRaises(FigmaError) as raised:
+            client.files('20')
+        self.assertIn('non-JSON', str(raised.exception))
+        self.assertEqual(raised.exception.status, 200)
 
     def test_recursive_files_deduplicate_keys(self):
         responses = {

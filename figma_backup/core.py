@@ -24,6 +24,10 @@ class FigmaError(RuntimeError):
         self.status = status
 
 
+class BrowserAuthError(FigmaError):
+    """Browser-session failures that must stop the whole queue until the user signs in."""
+
+
 def clean_name(value: str | None) -> str:
     name = unicodedata.normalize("NFC", str(value or "Untitled"))
     name = re.sub(r'[\x00-\x1f\x7f/\\:*?"<>|]', "_", name)
@@ -110,7 +114,11 @@ def merge_teams(*groups: list[dict]) -> list[dict]:
                 continue
             old = found.get(team_id, {})
             name = str(team.get("name") or "").strip()
-            found[team_id] = {"id": team_id, "name": name if name and name != team_id else old.get("name", team_id)}
+            merged = {"id": team_id, "name": name if name and name != team_id else old.get("name", team_id)}
+            avatar = team.get("avatar") or old.get("avatar")
+            if isinstance(avatar, str) and avatar.strip():
+                merged["avatar"] = avatar.strip()
+            found[team_id] = merged
     return sorted(found.values(), key=lambda team: team["name"].casefold())
 
 
@@ -292,7 +300,10 @@ class FigmaClient:
                 except (ValueError, AttributeError):
                     detail = ""
                 raise FigmaError(f"Figma API HTTP {response.status_code}: {endpoint}{': ' + str(detail) if detail else ''}", response.status_code)
-            body = response.json()
+            try:
+                body = response.json()
+            except ValueError as error:
+                raise FigmaError(f"Figma API returned a non-JSON response: {endpoint}", response.status_code) from error
             if not isinstance(body, dict):
                 raise FigmaError(f"Unexpected Figma API response: {endpoint}")
             return body

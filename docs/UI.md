@@ -1,0 +1,153 @@
+# UI Guide
+
+Screens, flows, and rules of the Fig Backup interface. The implementation lives in
+`src/App.jsx`; visual language is Tailwind v4 + shadcn/ui (nova) with Figma design tokens
+(see [ARCHITECTURE.md](ARCHITECTURE.md) → Design system).
+
+## Window & layout
+
+- Window: 960×700 (min 640×520). The **content column is capped at 680px**, centered.
+- Sticky top bar: “Fig Backup” with *Download manager* (download icon, opens a popover) and *Settings* (gear) on the trailing edge. On Settings, the bar contains only a Back icon and “Settings” title. On macOS it fills the transparent native titlebar; the traffic-light controls stay at the physical left, with extra clearance below 840px.
+- No sidebar. Navigation is the **breadcrumb** — `Teams / <Team> / <Folder>…` — where *Teams* is
+  always the root exit, plus a predictable Back chevron next to the page title.
+
+## Setup wizard (first run, or Settings → Redo setup)
+
+Shown when there is no stored token or setup was never completed. Two steps with a numbered rail
+(done / current / upcoming).
+
+| Step | Contents | Exits |
+| --- | --- | --- |
+| 1 · Access token | PAT input (`figd_…`), scopes hint, privacy note. *Save and continue* verifies via `/v1/me` and shows “Token verified for *name*”. | → Step 2 |
+| 2 · Browser sign-in | Explains the one-time Figma browser session. *Open sign-in window* becomes *I've signed in* after opening. | *I've signed in* → Teams · **I'll sign in later** → Teams (postponed) |
+
+- **Postponed sign-in**: the app works normally; if a backup run fails because of a missing
+  browser session, the app routes back to step 2 (step 1 shown complete) and the queue offers
+  *Retry & continue*.
+- **Language is English by default**; change it in Settings (or the “Change in Settings” link on
+  step 1). There is deliberately no language step in the wizard.
+- **Redo setup** (Settings) re-opens the wizard at step 1 if no token is stored, otherwise at
+  step 2.
+
+## Teams
+
+Inset list of discovered teams (team avatar, name, chevron) with count. Avatars discovered in the
+Figma team switcher are stored locally for display in the app; teams without an available image show
+their initial. *Refresh* re-scrapes the team switcher. If the browser session is missing,
+a banner offers *Open sign-in window* (same as wizard step 2).
+
+Row click → Browse for that team.
+
+## Browse (folders & files)
+
+Header: Back chevron + page title (current folder/team), breadcrumb underneath. Actions on the
+trailing edge depend on context:
+
+| Context | Actions |
+| --- | --- |
+| Team root, not selecting | *Download all* (primary) + *Select* |
+| Inside a folder, not selecting | *Back up this folder* + *Select* |
+| Select mode | tri-state **Select-all** checkbox + “N of M selected” + *Done* |
+
+Content is one inset card list. Folders appear first in alphabetical order, followed by files in
+alphabetical order. There are no section headers or download-location note.
+
+- **Not selecting** — clicking a folder row opens it (chevron affordance); per-row buttons offer
+  single *Back up* (folder, recursive) and *Download*.
+- **Select mode** — every row gets a checkbox replacing its action button; folder rows keep an
+  explicit *Open* chevron-link so navigation and selection never collide. Selected rows tint with
+  the brand wash.
+
+### Selection rules
+
+- Selection is **per team** and persists while you navigate (including into subfolders). It
+  clears when you start a backup from the pill or press its ×.
+- Checking a folder selects it **recursively**; the pill counts items as
+  “*F* folders · *G* files”. Select-all reflects the visible level: at team root it means the
+  whole team, inside a folder it covers that folder’s visible subfolders + loose files. Partial
+  coverage shows the indeterminate dash.
+- Esc (or *Done*) leaves Select mode and returns focus to the Select button.
+
+### The pill
+
+When a selection exists, a floating pill sits above the bottom edge:
+
+- “*N* items” + “*F* folders · *G* files”
+- **Back up *N* items** — or **Add to queue** while another backup is running; new items join
+  the current queue without interrupting the active file
+- **×** clears the selection
+
+Hidden while the download manager is open.
+
+## Backups: download manager
+
+The download icon in the top bar opens the **download manager popover**. Backup progress appears
+there without a persistent bottom bar:
+
+- Header: “Download manager” + item count; a progress ring, run title + current file,
+  “*done* of *total*”, and destination path (`~/Downloads/Fig Backup/<Team>/`) when a queue exists.
+- One row per queued item: `Team`/`Folder`/`File` chip, name, live status
+  (`Queued → Running → Saved | Failed`), error detail on failures, per-row **Retry**.
+- Footer: **Retry & continue** (after failures), **Cancel remaining (*k*)** (with a confirmation), **Stop after
+  current** (while running), **Open Downloads**, and **Open backup folder** when a queue exists.
+
+Items run **sequentially** (folders first, then files). Closing the popover never affects the run;
+Esc closes it and returns focus to the control that opened it. The popover is non-modal, so the rest of
+the app remains available while a backup runs.
+
+## Settings
+
+- The settings card starts directly below the top bar, with 4px top and bottom padding and no gap between rows. The last row has no bottom divider. Token storage notes are documented in the README rather than repeated in the screen.
+- **Language** — English (default) / فارسی. Applies immediately, including direction.
+- **Appearance** — Light / Dark / Follow system.
+- **Access token** — replace without redoing setup.
+- **Redo setup** — re-run the wizard (token step skipped if a token is stored).
+
+## Design system
+
+| Token | Light | Dark | Source |
+| --- | --- | --- | --- |
+| Background / surfaces | `#ffffff` / `#f5f5f5` | `#2c2c2c` / `#383838` | `--figma-color-bg*` |
+| Text / secondary | `rgba(0,0,0,.9)` / contrast-adjusted secondary | `#fff` / `.7` | `--figma-color-text*` via `src/index.css` |
+| Brand (primary) | contrast-adjusted `#0d99ff` | contrast-adjusted `#0c8ce9` | `--figma-color-bg-brand` via `src/index.css` |
+| Border | `#e6e6e6` | `#444444` | `--figma-color-border` |
+| Success / Danger (text) | contrast-adjusted Figma colors | `#79d297` / `#fca397` | `--figma-color-text-success/-danger` via `src/index.css` |
+
+- **Type**: Inter (fallback Helvetica). Size ramp from Tailwind defaults; titles use
+  `text-2xl font-bold tracking-tight`, list rows `text-sm font-medium`, meta text `text-xs`.
+- **Shape (nova)**: buttons h-28/h-24 rounded-lg without shadows, focus `ring-[3px]` at 50%
+  brand, cards `rounded-lg ring-1` without borders/shadows, badges are pills, and progress rings
+  use a 3px stroke.
+- **Icons**: lucide only, one stroke weight, sized 14–16px; decorative icons are `aria-hidden`.
+- **Motion**: 150ms color feedback, `active:translate-y-px` on buttons and progress-ring updates;
+  spinners and ring transitions respect `prefers-reduced-motion`.
+
+## Internationalization (i18n)
+
+- All copy lives in `src/i18n.js` (`en` / `fa` objects); `translate(lang, key, values)`
+  interpolates `{placeholders}`. Add new strings to **both** languages.
+- Direction: `<html dir>` flips to `rtl` for Persian. Layout uses logical utilities
+  (`ms-*`, `pe-*`, `start/end`); chevrons mirror via `rtl:-scale-x-100`; the progress fill and
+  the select checkmark are repositioned by two CSS patches in `index.css`.
+- Persian text in mixed rows is wrapped in `<bdi>` to keep bidi isolation.
+
+## Accessibility notes (implemented)
+
+- Selection controls are real `role="checkbox"` buttons: select-all reports
+  `aria-checked="mixed"`, row checkboxes announce their label (“Select Marketing”).
+- Icon-only buttons (back, download manager, settings, clear, close) carry `aria-label`s.
+- Visible `focus-visible` rings on every interactive control; Esc exits select mode or closes the download manager and restores focus.
+- Selection counts and run status updates are announced via `role="status"`; errors use
+  `role="alert"`.
+- Status is never color-only: every queue state pairs an icon + text label with its tint.
+- Interactive targets are ≥ 24px (checkbox buttons are 24px; row actions h-24+ with spacing).
+- `prefers-reduced-motion` disables the spinner and slide transitions (opacity fades instead).
+
+## Design history
+
+Earlier explorations are kept for reference at the repo root (static, self-contained HTML):
+
+- `ui-proposals.html` — the visual-language proposals that led to adopting shadcn/ui nova + Figma tokens.
+- `layout-proposals.html` — the layout/steps explorations (two-pane, Finder-style three-pane, linear
+  wizard) that led to the shipped single-column layout; includes the design-director review and the
+  decisions that were rejected (sidebar, three-column picker).

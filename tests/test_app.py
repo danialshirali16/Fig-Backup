@@ -1,10 +1,12 @@
 import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 from playwright._impl._errors import TargetClosedError
 
 from figma_backup.app import Bridge
+from figma_backup.core import BrowserAuthError, FigmaError
 
 
 class Client:
@@ -26,6 +28,12 @@ class Client:
 
     def editor_type(self, file):
         return file['editorType']
+
+
+class FigmaFilesClient(Client):
+    def all_files(self, folder):
+        return [{'key': 'a', 'name': 'A', 'editorType': 'figma'},
+                {'key': 'b', 'name': 'B', 'editorType': 'figma'}]
 
 
 class Browser:
@@ -81,6 +89,72 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(bridge.status()['saved'], 1)
         self.assertEqual(browser.calls, 2)
         self.assertTrue(browser.stopped)
+
+    def test_api_403_fails_file_but_queue_continues(self):
+        class RestrictedClient(FigmaFilesClient):
+            def editor_type(self, file):
+                if file['key'] == 'a':
+                    raise FigmaError('Figma API HTTP 403: /v1/files/a?depth=1', 403)
+                return 'figma'
+
+        bridge = self.make_bridge(Browser())
+        bridge.client = RestrictedClient()
+        with patch('figma_backup.app.TreeArchiveIndex') as index:
+            index.return_value.root = Path('/tmp/Fig Backup/Team')
+            bridge._run_download({'scope': 'folder', 'team': {'id': '10', 'name': 'Team'},
+                                  'folder': {'id': '44', 'name': 'Folder'}})
+        state = bridge.status()
+        self.assertEqual(state['phase'], 'done')
+        self.assertEqual((state['failed'], state['saved']), (1, 1))
+        self.assertEqual([item['status'] for item in state['items']], ['failed', 'saved'])
+
+    def test_browser_auth_error_stops_queue_with_attention(self):
+        class AuthRequiredBrowser(Browser):
+            def download(self, file, index, progress):
+                raise BrowserAuthError('Browser sign-in is required. Use the Sign in button, then retry.')
+
+        bridge = self.make_bridge(AuthRequiredBrowser())
+        bridge.client = FigmaFilesClient()
+        with patch('figma_backup.app.TreeArchiveIndex') as index:
+            index.return_value.root = Path('/tmp/Fig Backup/Team')
+            bridge._run_download({'scope': 'folder', 'team': {'id': '10', 'name': 'Team'},
+                                  'folder': {'id': '44', 'name': 'Folder'}})
+        state = bridge.status()
+        self.assertEqual(state['phase'], 'attention')
+        self.assertEqual(state['failed'], 1)
+        self.assertEqual([item['status'] for item in state['items']], ['failed', 'queued'])
+        self.assertFalse(state['running'])
+
+    def test_shutdown_forces_exit_when_download_is_stuck(self):
+        class StuckExecutor:
+            def submit(self, *args, **kwargs):
+                raise RuntimeError('cannot queue')
+
+            def shutdown(self, wait=False):
+                pass
+
+        bridge = self.make_bridge(Browser())
+        bridge.executor = StuckExecutor()
+        exits = []
+        bridge.shutdown(grace_seconds=0.05, exit_now=exits.append)
+        self.assertTrue(bridge.stop_requested)
+        self.assertEqual(exits, [0])
+
+    def test_shutdown_stops_browser_when_idle(self):
+        class StoppingBrowser(Browser):
+            stopped = False
+
+            def stop(self):
+                self.stopped = True
+
+        browser = StoppingBrowser()
+        bridge = self.make_bridge(browser)
+        bridge.executor = ThreadPoolExecutor(max_workers=1)
+        bridge.state['running'] = False
+        exits = []
+        bridge.shutdown(grace_seconds=1.0, exit_now=exits.append)
+        self.assertTrue(browser.stopped)
+        self.assertEqual(exits, [0])
 
 
 if __name__ == '__main__':

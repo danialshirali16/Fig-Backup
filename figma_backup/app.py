@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -12,7 +13,7 @@ import webview
 from playwright._impl._errors import TargetClosedError
 
 from .browser import Browser
-from .core import APP_SUPPORT, DOWNLOADS, SUPPORT, ArchiveIndex, FigmaClient, FigmaError, PreferencesStore, TokenStore, TreeArchiveIndex, merge_teams, read_json, team_id_from_input, write_json
+from .core import APP_SUPPORT, BrowserAuthError, DOWNLOADS, SUPPORT, ArchiveIndex, FigmaClient, FigmaError, PreferencesStore, TokenStore, TreeArchiveIndex, merge_teams, read_json, team_id_from_input, write_json
 
 
 class Bridge:
@@ -186,14 +187,18 @@ class Bridge:
                         item["status"] = result["status"]
                         item["detail"] = result["path"]
                         self.state["saved" if result["status"] == "saved" else "existing"] += 1
+                except BrowserAuthError as error:
+                    with self.lock:
+                        item["status"] = "failed"
+                        item["detail"] = str(error).splitlines()[0]
+                        self.state["failed"] += 1
+                    self._set(phase="attention", message=str(error).splitlines()[0])
+                    break
                 except Exception as error:
                     with self.lock:
                         item["status"] = "failed"
                         item["detail"] = str(error).splitlines()[0]
                         self.state["failed"] += 1
-                    if "sign-in is required" in str(error).lower() or "HTTP 403" in str(error):
-                        self._set(phase="attention", message=str(error))
-                        break
             with self.lock:
                 if self.state["phase"] == "downloading":
                     self.state["phase"] = "done"
@@ -219,12 +224,43 @@ class Bridge:
         subprocess.Popen(["open", str(path if path.exists() else DOWNLOADS)])
         return {"opened": True}
 
-    def shutdown(self) -> None:
+    def shutdown(self, grace_seconds: float = 3.0, exit_now=os._exit) -> None:
+        """Quit within a bounded time even when a download keeps the worker busy.
+
+        Playwright's sync API is thread-bound, so an in-flight download cannot be
+        interrupted from this thread. Downloads and indexes are written atomically
+        (temp file + rename), so after a grace period the process is hard-exited.
+        """
+        with self.lock:
+            self.stop_requested = True
         try:
-            self.executor.submit(self.browser.stop).result(timeout=10)
+            self.executor.submit(self.browser.stop).result(timeout=grace_seconds)
         except Exception:
             pass
         self.executor.shutdown(wait=False)
+        deadline = time.monotonic() + grace_seconds
+        while time.monotonic() < deadline:
+            with self.lock:
+                if not self.state["running"]:
+                    break
+            time.sleep(0.05)
+        exit_now(0)
+
+
+def configure_titlebar(window) -> None:
+    """Let the web header fill the titlebar while keeping native window controls."""
+    import AppKit
+
+    native = window.native
+    native.setStyleMask_(native.styleMask() | AppKit.NSWindowStyleMaskFullSizeContentView)
+    native.setTitlebarAppearsTransparent_(True)
+    native.setTitleVisibility_(AppKit.NSWindowTitleHidden)
+    native.setMovableByWindowBackground_(True)
+    # pywebview paints its titlebar view with the system window color. Clear it
+    # so the web header is visible behind the native traffic-light buttons.
+    native.contentView().superview().subviews().lastObject().setBackgroundColor_(
+        AppKit.NSColor.clearColor()
+    )
 
 
 def main() -> None:
@@ -233,9 +269,11 @@ def main() -> None:
     if not html.exists():
         raise SystemExit("The interface has not been built yet. Run Fig Backup.command.")
     bridge = Bridge()
+    webview.settings['DRAG_REGION_DIRECT_TARGET_ONLY'] = True
     window = webview.create_window("Fig Backup", str(html), js_api=bridge,
                                    width=960, height=700, min_size=(640, 520),
                                    background_color="#f5f5f5")
+    window.events.before_show += configure_titlebar
     window.events.closed += bridge.shutdown
     webview.start(gui="cocoa", debug="--debug" in sys.argv)
 
