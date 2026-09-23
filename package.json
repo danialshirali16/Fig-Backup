@@ -1,0 +1,17 @@
+{
+  "name": "fig-backup-ui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite --host 127.0.0.1"
+  },
+  "dependencies": {
+    "@create-figma-plugin/ui": "4.0.3",
+    "preact": "10.27.2"
+  },
+  "devDependencies": {
+    "vite": "7.1.12"
+  }
+}

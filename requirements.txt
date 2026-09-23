@@ -1,0 +1,3 @@
+playwright==1.63.0
+pywebview==6.2.1
+requests==2.34.2

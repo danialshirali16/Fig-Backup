@@ -1,0 +1,244 @@
+"""Mac desktop bridge. Browser work is confined to one worker thread."""
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+
+import webview
+from playwright._impl._errors import TargetClosedError
+
+from .browser import Browser
+from .core import APP_SUPPORT, DOWNLOADS, SUPPORT, ArchiveIndex, FigmaClient, FigmaError, PreferencesStore, TokenStore, TreeArchiveIndex, merge_teams, read_json, team_id_from_input, write_json
+
+
+class Bridge:
+    def __init__(self):
+        self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="figma-browser")
+        self.browser = Browser()
+        self.token_store = TokenStore()
+        self.preferences_store = PreferencesStore()
+        self.token = os.environ.get("FIGMA_PAT") or self.token_store.load()
+        self.client = FigmaClient(self.token) if self.token else None
+        self.lock = threading.Lock()
+        self.state = {"running": False, "phase": "idle", "items": [], "current": 0, "total": 0,
+                      "saved": 0, "existing": 0, "skipped": 0, "failed": 0,
+                      "message": "", "warning": "", "finished": False}
+        self.stop_requested = False
+
+    def _required(self) -> FigmaClient:
+        if not self.client:
+            raise FigmaError("Add a Personal Access Token first")
+        return self.client
+
+    def bootstrap(self) -> dict:
+        SUPPORT.mkdir(parents=True, exist_ok=True, mode=0o700)
+        APP_SUPPORT.mkdir(parents=True, exist_ok=True, mode=0o700)
+        DOWNLOADS.mkdir(parents=True, exist_ok=True)
+        return {"has_token": bool(self.token), "downloads": str(DOWNLOADS),
+                "teams": read_json(SUPPORT / "teams.json", []),
+                "preferences": self.preferences_store.load(), "version": "0.2.0"}
+
+    def save_preferences(self, changes: dict) -> dict:
+        return self.preferences_store.save(changes)
+
+    def save_token(self, token: str) -> dict:
+        token = token.strip()
+        if not token:
+            raise FigmaError("Token cannot be empty")
+        candidate = FigmaClient(token)
+        user = candidate.me()
+        self.token_store.save(token)
+        self.token, self.client = token, candidate
+        return {"name": user.get("handle") or user.get("email") or "Figma"}
+
+    def open_sign_in(self) -> dict:
+        self.executor.submit(self.browser.open_sign_in).result()
+        return {"opened": True}
+
+    def discover_teams(self) -> dict:
+        self._required()
+        saved = read_json(SUPPORT / "teams.json", [])
+        if not isinstance(saved, list):
+            saved = []
+        result = self.executor.submit(self.browser.discover_teams, saved).result()
+        teams = merge_teams(saved, result["teams"])
+        write_json(SUPPORT / "teams.json", teams)
+        return {"teams": teams, "auth_required": result["auth_required"]}
+
+    def add_team(self, text: str, name: str = "") -> dict:
+        self._required()
+        team_id = team_id_from_input(text)
+        if not team_id:
+            raise FigmaError("Enter a valid team link or ID")
+        teams = merge_teams(read_json(SUPPORT / "teams.json", []), [{"id": team_id, "name": name or team_id}])
+        write_json(SUPPORT / "teams.json", teams)
+        return {"teams": teams, "team": next(team for team in teams if team["id"] == team_id)}
+
+    def folders(self, team_id: str) -> dict:
+        client = self._required()
+        folders = client.top_folders(team_id)
+        return {"folders": folders, "legacy": client.folder_api == "v1"}
+
+    def subfolders(self, folder_id: str) -> dict:
+        client = self._required()
+        folders = client.subfolders(folder_id)
+        return {"folders": folders, "unavailable": str(folder_id) in client.unavailable_subfolders}
+
+    def files(self, folder_id: str) -> dict:
+        client = self._required()
+        files = client.files(folder_id)
+        return {"files": files, "unavailable": str(folder_id) in client.unavailable_subfolders}
+
+    def start_download(self, selection: dict) -> dict:
+        self._required()
+        if not isinstance(selection, dict) or selection.get("scope") not in ("team", "folder", "file"):
+            raise FigmaError("Choose a team, folder, or file to download")
+        team = selection.get("team")
+        if not isinstance(team, dict) or not str(team.get("id", "")).isdigit():
+            raise FigmaError("Choose a valid team")
+        if selection["scope"] != "team":
+            folder = selection.get("folder")
+            if not isinstance(folder, dict) or not str(folder.get("id", "")).isdigit():
+                raise FigmaError("Choose a valid folder")
+        if selection["scope"] == "file" and not selection.get("file_key"):
+            raise FigmaError("Choose a file")
+        with self.lock:
+            if self.state["running"]:
+                raise FigmaError("Another download is already running")
+            self.state = {"running": True, "phase": "scanning", "items": [], "current": 0, "total": 0,
+                          "saved": 0, "existing": 0, "skipped": 0, "failed": 0,
+                          "message": "Collecting files…", "warning": "", "finished": False}
+            self.stop_requested = False
+        self.executor.submit(self._run_download, selection)
+        return {"started": True}
+
+    def stop_download(self) -> dict:
+        with self.lock:
+            self.stop_requested = True
+            self.state["message"] = "Stopping after the current file…"
+        return {"stopping": True}
+
+    def status(self) -> dict:
+        with self.lock:
+            return {**self.state, "items": [item.copy() for item in self.state["items"]]}
+
+    def _set(self, **changes) -> None:
+        with self.lock:
+            self.state.update(changes)
+
+    def _run_download(self, selection: dict) -> None:
+        client = self._required()
+        try:
+            client.unavailable_subfolders.clear()
+            scope = selection["scope"]
+            team = selection["team"]
+            if scope == "file":
+                files = [item for item in client.files(selection["folder"]["id"])
+                         if item.get("key") == selection["file_key"]]
+                if not files:
+                    raise FigmaError("The selected file was not found in this folder")
+                index = ArchiveIndex()
+                destination = str(DOWNLOADS)
+            else:
+                roots = client.top_folders(team["id"]) if scope == "team" else [selection["folder"]]
+                files, folder_paths = client.walk_tree(roots)
+                index = TreeArchiveIndex(team)
+                index.prepare_folders(folder_paths)
+                destination = str(index.root)
+            items = [{"key": file["key"], "name": file.get("name") or "Untitled", "status": "queued", "detail": ""}
+                     for file in files if file.get("key")]
+            self._set(items=items, total=len(items), phase="downloading",
+                      destination=destination, message="Download queue is ready" if items else "No design files were found")
+            for position, file in enumerate(files):
+                if not file.get("key"):
+                    continue
+                with self.lock:
+                    if self.stop_requested:
+                        self.state["phase"] = "stopped"
+                        break
+                    self.state["current"] = position + 1
+                    item = next(x for x in self.state["items"] if x["key"] == file["key"])
+                    item["status"] = "checking"
+                    self.state["message"] = file.get("name") or "Untitled"
+                try:
+                    kind = client.editor_type(file)
+                    if kind != "figma":
+                        with self.lock:
+                            item["status"] = "skipped"
+                            item["detail"] = f"File type: {kind or 'unknown'}"
+                            self.state["skipped"] += 1
+                        continue
+                    def progress(status: str, detail: str) -> None:
+                        with self.lock:
+                            item["status"] = status
+                            item["detail"] = detail
+                    try:
+                        result = self.browser.download(file, index, progress)
+                    except TargetClosedError:
+                        progress("retrying", "Chromium closed; trying again…")
+                        self.browser.stop()
+                        result = self.browser.download(file, index, progress)
+                    with self.lock:
+                        item["status"] = result["status"]
+                        item["detail"] = result["path"]
+                        self.state["saved" if result["status"] == "saved" else "existing"] += 1
+                except Exception as error:
+                    with self.lock:
+                        item["status"] = "failed"
+                        item["detail"] = str(error).splitlines()[0]
+                        self.state["failed"] += 1
+                    if "sign-in is required" in str(error).lower() or "HTTP 403" in str(error):
+                        self._set(phase="attention", message=str(error))
+                        break
+            with self.lock:
+                if self.state["phase"] == "downloading":
+                    self.state["phase"] = "done"
+                self.state["warning"] = (
+                    f"Figma did not expose subfolders for {len(client.unavailable_subfolders)} folder(s); this backup may be incomplete."
+                    if client.unavailable_subfolders else ""
+                )
+                self.state["running"] = False
+                self.state["finished"] = True
+        except Exception as error:
+            self._set(running=False, finished=True, phase="error", message=str(error).splitlines()[0])
+
+    def open_downloads(self) -> dict:
+        subprocess.Popen(["open", str(DOWNLOADS)])
+        return {"opened": True}
+
+    def open_destination(self) -> dict:
+        with self.lock:
+            destination = self.state.get("destination") or str(DOWNLOADS)
+        path = Path(destination).resolve()
+        if not path.is_relative_to(DOWNLOADS.resolve()):
+            raise FigmaError("The backup destination is outside Downloads")
+        subprocess.Popen(["open", str(path if path.exists() else DOWNLOADS)])
+        return {"opened": True}
+
+    def shutdown(self) -> None:
+        try:
+            self.executor.submit(self.browser.stop).result(timeout=10)
+        except Exception:
+            pass
+        self.executor.shutdown(wait=False)
+
+
+def main() -> None:
+    root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
+    html = root / "dist/index.html"
+    if not html.exists():
+        raise SystemExit("The interface has not been built yet. Run Fig Backup.command.")
+    bridge = Bridge()
+    window = webview.create_window("Fig Backup", str(html), js_api=bridge,
+                                   width=960, height=700, min_size=(640, 520),
+                                   background_color="#f5f5f5")
+    window.events.closed += bridge.shutdown
+    webview.start(gui="cocoa", debug="--debug" in sys.argv)
+
+
+if __name__ == "__main__":
+    main()
