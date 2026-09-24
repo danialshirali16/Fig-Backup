@@ -4,30 +4,69 @@
 
 <h1 align="center">Fig Backup</h1>
 
-<p align="center">
-  <strong>Native <code>.fig</code> backups from Figma — free, local, one click.</strong><br>
-  A desktop app for Apple&nbsp;Silicon Macs and Windows&nbsp;10/11.
-</p>
-
 <!-- Language switcher: add one link per translated README next to "English", e.g.
      English · <a href="README.fa.md">فارسی</a> · <a href="README.de.md">Deutsch</a> -->
 
 <p align="center">
   <a href="#license"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue"></a>
   <img alt="Platforms" src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows-blue">
-  <img alt="Python" src="https://img.shields.io/badge/python-3.9%2B-informational">
-  <a href="https://github.com/danialshirali16/Fig-Backup/actions/workflows/windows-build.yml?query=branch%3Awindows-build"><img alt="Windows build" src="https://github.com/danialshirali16/Fig-Backup/actions/workflows/windows-build.yml/badge.svg?branch=windows-build"></a>
+  <a href="https://github.com/danialshirali16/Fig-Backup/actions/workflows/windows-build.yml?query=branch%3Awindows-build" title="Build status of the windows-build branch"><img alt="Windows build (windows-build branch)" src="https://github.com/danialshirali16/Fig-Backup/actions/workflows/windows-build.yml/badge.svg?branch=windows-build"></a>
 </p>
 
----
+**Save native copies of your Figma files to your computer.** Fig Backup is a free desktop app for
+Apple Silicon Macs and Windows 10/11. It saves Figma Design files as `.fig`, FigJam files as
+`.jam`, and Figma Slides as `.deck`.
 
 <p align="center">
   <img src="docs/screenshots/cover.png" alt="Fig Backup cover — native .fig backups from Figma, free local desktop app for macOS and Windows" width="100%">
 </p>
 
-Fig Backup saves native copies of your Figma files — `.fig` for Design, `.jam` for FigJam,
-`.deck` for Slides — with your folder structure preserved, straight into your Downloads folder.
-It is a **local desktop app**: nothing is uploaded anywhere, and your token stays on your machine.
+## Download
+
+Get the [**latest release**](https://github.com/danialshirali16/Fig-Backup/releases/latest):
+
+| Platform | Download |
+| --- | --- |
+| macOS (Apple Silicon) | [`Fig-Backup-macOS.zip`](https://github.com/danialshirali16/Fig-Backup/releases/latest) — the asset name includes the version |
+| Windows 10/11 (x64) | [`Fig-Backup-Windows-x64.zip`](https://github.com/danialshirali16/Fig-Backup/releases/latest/download/Fig-Backup-Windows-x64.zip) — direct download |
+
+Every release also ships a `SHA256SUMS.txt` with checksums for both files.
+
+On first launch, Fig Backup downloads Chromium (about 150 MB) to run the backup browser. The macOS
+app is unsigned, so you may need to right-click it and choose **Open**. For installation help, see
+[Troubleshooting](docs/TROUBLESHOOTING.md).
+
+## Get started
+
+1. Create a Figma Personal Access Token with `folders:read` and `file_metadata:read` permissions
+   (older tokens with `projects:read` also work).
+2. Open Fig Backup, paste the token, and sign in to Figma in the browser window it opens.
+3. Choose a team. Select **Download all**, or use **Select** to pick specific folders and files.
+
+Browser sign-in is required before the first backup; you can postpone it during setup and the app
+will ask again when needed. After setup, backups run in the background.
+
+## What gets backed up?
+
+- Figma Design, FigJam, and Slides files are saved in their native formats:<br>
+  <img src="docs/screenshots/figma-file-design.png" height="20" alt="Figma Design files">
+  <img src="docs/screenshots/figma-file-figjam.png" height="20" alt="FigJam files">
+  <img src="docs/screenshots/figma-file-slides.png" height="20" alt="Figma Slides files">
+- Back up a whole team with one click, or use **Select** to choose folders and individual files.
+- Folder backups preserve the team and folder structure.
+- The download manager shows live progress and lets you retry, stop, or cancel queued items.
+  Unsupported file types are skipped and don't count toward the progress percent.
+
+Team and folder backups go to `Downloads/Fig Backup/<Team>/<Folder>/…`. Individual files go
+directly to `Downloads`. If a filename already exists, Fig Backup adds a number instead of
+overwriting it.
+
+## How it works
+
+Figma's REST API does not provide native file exports. Fig Backup uses a browser to automate the
+Figma editor's **Save local copy** action, so what lands on your disk is the same file the Figma
+editor produces. Because this depends on Figma's web interface, a future Figma change may require
+an app update.
 
 ## Screenshots
 
@@ -37,101 +76,25 @@ It is a **local desktop app**: nothing is uploaded anywhere, and your token stay
 | **Download manager** | **Dark mode** |
 | <img src="docs/screenshots/download-manager.png" alt="Download manager popover with a running queue"> | <img src="docs/screenshots/dark-mode.png" alt="Browse view with the dark theme"> |
 
-## Why?
+## Privacy and security
 
-The Figma REST API cannot export native `.fig` files — the only official way to get one is the web
-editor's *Save local copy* action. Fig Backup automates that workflow for you with a bundled
-Chromium browser, so what lands on your disk is the same file the Figma editor produces. Pick a
-team, choose folders and files, and keep working while the backup runs in the background.
+Backups are saved on your computer. Fig Backup communicates with Figma to access your files and
+does not upload your files or token to a Fig Backup server, and there is no telemetry.
 
-## Features
+Your token is stored at `~/Library/Application Support/Fig Backup/token.json` with file
+permissions `0600`. It is not stored in the system keychain and not separately encrypted — do not
+use a shared computer account. A `FIGMA_PAT` environment variable can override it for scripted
+launches. See [SECURITY.md](SECURITY.md) for details. Use the app only with files you are
+authorized to access.
 
-- **All Figma file types** — every type is backed up in its own native format: Figma Design as
-  `.fig`, FigJam as `.jam`, and Slides as `.deck`:<br>
-  <img src="docs/screenshots/figma-file-design.png" height="20" alt="Figma Design files">
-  <img src="docs/screenshots/figma-file-figjam.png" height="20" alt="FigJam files">
-  <img src="docs/screenshots/figma-file-slides.png" height="20" alt="Figma Slides files">
-- **Two-step setup wizard** — *Access token → Browser sign-in*. The one-time browser sign-in is a
-  hard requirement for native `.fig` exports, so it is part of setup ("I'll sign in later" works
-  too; the first backup routes you back if needed). Re-run it anytime via *Settings → Redo setup*.
-- **Multi-select backups** — toggle *Select* to pick any combination of folders (backed up
-  recursively) and loose files of a team, then start one backup from the floating pill. While a
-  backup runs, new selections join the queue.
-- **Non-blocking download manager** — a popover in the top bar shows progress, the current file,
-  and one row per queued item with per-item *Retry*, *Stop after current*, and confirmed
-  *Cancel remaining*. The rest of the app stays usable while a backup runs. Selections with
-  unsupported file types show a skipped or partial result; skipped files do not increase the progress percent.
-- **Structure-preserving archives** — team/folder backups land in
-  `Downloads/Fig Backup/<Team>/<Folder>/…`; single files go flat into `Downloads`. Duplicates
-  become `name(1).fig`, `name(2).fig`, …
+## Help and contributing
 
-## Download
+Having trouble installing, signing in, or downloading? Read
+[Troubleshooting](docs/TROUBLESHOOTING.md). Bug reports and contributions are welcome; see
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
-Grab the latest build from the
-[**Releases page**](https://github.com/danialshirali16/Fig-Backup/releases).
-
-| | |
-| --- | --- |
-| **macOS** (Apple Silicon) | Double-click `Fig Backup.app`. Builds are unsigned, so macOS shows a Gatekeeper warning: right-click the app and choose *Open*, or allow it under System Settings → Privacy & Security. |
-| **Windows** (x64) | Unpack and run `Fig Backup.exe`. Needs the WebView2 runtime, which is preinstalled on Windows 10/11. |
-
-On first launch the app downloads Chromium once (~150 MB) for its backup browser — an internet
-connection is required for that. Everything else runs locally: backups talk only to Figma, nothing
-else. Problems installing or signing in? See
-[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
-
-## Getting started
-
-1. **Create a Figma Personal Access Token** with `folders:read` and `file_metadata:read` scopes
-   (Figma → Settings → Security → Personal access tokens). Older PATs with `projects:read` also
-   work; the app falls back to the legacy Projects API automatically.
-2. **Paste the token** into the setup wizard. It is verified against Figma and saved locally.
-3. **Sign in to figma.com once** in the window the app opens — after that, backups run headless in
-   the background with no visible browser. You can postpone this step; the app routes you back
-   before the first backup if the session is missing.
-4. **Pick a team** → *Download all*, or use *Select* to choose folders/files and back them up
-   together.
-
-### Where your backups go
-
-| What | Where |
-| --- | --- |
-| Team / folder backups | `~/Downloads/Fig Backup/<Team>/<Folder>/…` |
-| Single files | `~/Downloads/<name>.fig` — `.jam` for FigJam and `.deck` for Slides; duplicates become `name(1)`, `name(2)`, … |
-
-If Figma restricts subfolder listing for your region (HTTP 451), the app warns you that the backup
-may be incomplete.
-
-## Security & privacy
-
-- **Everything is local.** Fig Backup talks only to Figma — it never uploads your files or token
-  anywhere else, and there is no telemetry.
-- The token is stored at `~/Library/Application Support/Fig Backup/token.json` with file
-  permissions `0600` inside a `0700` folder. It is **not** stored in the system keychain and
-  **not** separately encrypted — do not use a shared macOS user account. For scripted launches, a
-  `FIGMA_PAT` environment variable overrides the saved file at startup.
-- Fig Backup does not read or delete a token saved by the old shell tool in Keychain; enter the
-  token once in the app.
-- The Chromium profile and download index at
-  `~/Library/Application Support/Figma Fig Downloader/` are reused from the earlier shell tool for
-  compatibility.
-
-## Disclaimer
-
-Fig Backup is an independent, open-source tool and is **not affiliated with, endorsed by, or
-connected to Figma**. It relies on the Figma web editor's interface, which may change at any time
-and require app updates. Only use Fig Backup with files you are authorized to access, and keep
-backups of anything important — this tool is provided as is, without warranty.
-
-## Contributing
-
-Bug reports, fixes, and features are welcome — see
-[CONTRIBUTING.md](CONTRIBUTING.md) for the development setup and project conventions (run the
-tests, add UI strings to every language in `src/i18n.js`, and rebuild `dist/` after UI changes).
-
-## License
-
-[MIT](LICENSE) — free to use, modify, and redistribute.
+Fig Backup is an independent project and is not affiliated with Figma. It is released under the
+[MIT License](LICENSE).
 
 ## Donate
 
