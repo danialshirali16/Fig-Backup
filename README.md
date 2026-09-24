@@ -4,11 +4,13 @@
 
 <h1 align="center">Fig Backup</h1>
 
-<!-- Language switcher: add one link per translated README next to "English", e.g.
-     English · <a href="README.fa.md">فارسی</a> · <a href="README.de.md">Deutsch</a> -->
+<p align="center">
+  <b>English</b> · <a href="README.fa.md">فارسی</a>
+  <!-- Add one link per translated README, e.g. · <a href="README.de.md">Deutsch</a> -->
+</p>
 
 <p align="center">
-  <a href="#license"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue"></a>
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue"></a>
   <img alt="Platforms" src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows-blue">
   <a href="https://github.com/danialshirali16/Fig-Backup/actions/workflows/windows-build.yml?query=branch%3Awindows-build" title="Build status of the windows-build branch"><img alt="Windows build (windows-build branch)" src="https://github.com/danialshirali16/Fig-Backup/actions/workflows/windows-build.yml/badge.svg?branch=windows-build"></a>
 </p>
