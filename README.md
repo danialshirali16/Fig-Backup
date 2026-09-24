@@ -164,11 +164,9 @@ tests, add UI strings to every language in `src/i18n.js`, and rebuild `dist/` af
 
 ## Donate
 
-<!-- TODO: replace with your Bitcoin address and drop donate-qr.png into docs/screenshots/ -->
-
 If Fig Backup saves you time, you can support its development with Bitcoin:
 
 <p align="center">
   <img src="docs/screenshots/donate-qr.png" alt="Bitcoin donation QR code" width="180"><br>
-  <code>YOUR-BITCOIN-ADDRESS-HERE</code>
+  <code>bc1qf9dufwjyzp7u56lysgn2a0n2956y6xm5dzq6q4</code>
 </p>
