@@ -59,7 +59,8 @@ team, choose folders and files, and keep working while the backup runs in the ba
   backup runs, new selections join the queue.
 - **Non-blocking download manager** — a popover in the top bar shows progress, the current file,
   and one row per queued item with per-item *Retry*, *Stop after current*, and confirmed
-  *Cancel remaining*. The rest of the app stays usable while a backup runs.
+  *Cancel remaining*. The rest of the app stays usable while a backup runs. Selections with
+  unsupported file types show a skipped or partial result; skipped files do not increase the progress percent.
 - **Structure-preserving archives** — team/folder backups land in
   `Downloads/Fig Backup/<Team>/<Folder>/…`; single files go flat into `Downloads`. Duplicates
   become `name(1).fig`, `name(2).fig`, …

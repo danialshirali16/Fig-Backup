@@ -99,7 +99,7 @@ download manager (see the Figma source of truth):
 - One-time browser setup states render as slim banners between the header and the list (spinner
   card while installing, danger card + full-width *Retry setup* on failure, a one-line “Browser
   ready” flash for 2.5s after success).
-- The list is split into two counted sections: **In Progress** (queued, running, failed, stopped)
+- The list is split into two counted sections: **In Progress** (queued, running, partial, skipped, failed, stopped)
   and **Completed** (done). Each row: a 28px icon (the real Figma file icon for files; muted
   `Users`/`Folder` tile for teams/folders), the name, and a **status caption** underneath —
   “Queue” while queued; the live export stage while running, using the design's exact wording
@@ -112,7 +112,9 @@ download manager (see the Figma source of truth):
   next** (play — runs that item first) on hover or keyboard focus; the running row shows a spinner
   that swaps to **Cancel** (stop after current) the same way; completed rows show **Show in folder**
   (reveals the file in Finder/Explorer) on hover; failed/stopped rows always show **Cancel**
-  (dismiss the row) and **Retry** (`refresh-cw`), with their error caption in the danger color —
+  (dismiss the row) and **Retry** (`refresh-cw`); partial and skipped rows offer the same actions.
+  Partial rows show the completed file count alongside the unsupported-file notice; skipped rows
+  explain that no supported files were found. Failed rows use the danger color —
   the error state per the Figma source of truth. The **Clear** header button renders only while
   completed rows exist.
 

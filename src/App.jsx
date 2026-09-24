@@ -16,14 +16,13 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Toaster } from '@/components/ui/sonner'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { translate, LANGUAGES, RTL_LANGUAGES } from './i18n'
-import { downloadFailureDescription } from './download-errors'
+import { DONE_STATES, queueProgressPercent, summarizeDownloadRun } from './download-queue'
 import { flyToQueue, cancelAllFlights } from './fly-to-queue'
 import iconFileDesign from './assets/figma-file-design.png'
 import donateQr from './assets/donate-qr.png'
 import iconFileSlides from './assets/figma-file-slides.png'
 import iconFileFigjam from './assets/figma-file-figjam.png'
 
-const DONE_STATES = ['saved', 'exists', 'renamed']
 const BITCOIN_ADDRESS = 'bc1qf9dufwjyzp7u56lysgn2a0n2956y6xm5dzq6q4'
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms))
 const firstLine = (text) => String(text || '').split('\n')[0].replace(/^Error:\s*/, '')
@@ -493,10 +492,7 @@ function App() {
           const doneFiles = s.items.filter(i => DONE_STATES.includes(i.status))
           const runPath = item.kind === 'file' ? (doneFiles[0]?.detail || '') : (s.destination || '')
           updateQueueItem(item.id, {
-            status: s.phase === 'stopped' ? 'stopped' : s.phase === 'error' || s.failed > 0 ? 'failed' : 'done',
-            detail: s.phase === 'error' || s.failed > 0 ? downloadFailureDescription(s, item.name, t) : '',
-            bytes: doneFiles.reduce((sum, i) => sum + (i.size || 0), 0),
-            filesDone: doneFiles.length,
+            ...summarizeDownloadRun(s, item.name, t),
             runPath,
           })
         } catch (err) {
@@ -599,8 +595,7 @@ function App() {
   const doneCount = progress.items.filter(item => DONE_STATES.includes(item.status)).length
   const loadingBrowse = busy === 'browse' || busy === 'folders'
   const activeWork = queue.some(item => item.status === 'running' || item.status === 'queued')
-  const queueDoneCount = queue.filter(item => item.status === 'done').length
-  const downloadPct = queue.length ? Math.round(queueDoneCount / queue.length * 100) : 0
+  const downloadPct = queueProgressPercent(queue, progress)
   /* Live per-file stage for the running row's caption; re-renders come from the 400 ms polls. */
   const liveFile = progress.running && progress.phase === 'downloading'
     ? progress.items.find(item => LIVE_FILE_STATES.includes(item.status)) : null
@@ -729,6 +724,7 @@ function App() {
     }
     if (item.status === 'stopped') return <span>{item.detail || t('statusStopped')}</span>
     if (item.status === 'failed') return <span className="text-destructive">{item.detail || t('statusFailed')}</span>
+    if (item.status === 'partial' || item.status === 'skipped') return <span>{item.detail || t('skipped')}</span>
     if (item.kind === 'file') return <span>{fmtBytes(item.bytes) || t('statusSaved')}</span>
     return <span>{countCopy('filesCount', item.filesDone || 0)}</span>
   }
@@ -763,7 +759,7 @@ function App() {
         </button>
       )
     }
-    if (item.status === 'failed' || item.status === 'stopped') {
+    if (item.status === 'failed' || item.status === 'stopped' || item.status === 'partial' || item.status === 'skipped') {
       return (
         <span className="flex flex-none items-center gap-0.5">
           <button type="button" onClick={() => cancelItem(item.id)} aria-label={t('cancelItem')} title={t('cancelItem')} className={rowBtn}>

@@ -126,7 +126,8 @@ lands directly in Teams.
 `startSelectionBackup()` converts the selection into an ordered item list (folders first, then
 files) and runs them **sequentially**: for each item, call `start_download`, then poll `status()`
 every 400 ms until `finished`. Additional selections can join the active queue. Item statuses:
-`queued → running → done | failed | stopped`. A failure whose
+`queued → running → done | partial | skipped | failed | stopped`. A run with only unsupported
+files is skipped; a run with both saved and skipped files is partial. A failure whose
 message mentions sign-in marks the item failed with “Sign-in required”, stops the loop, and routes
 to the wizard sign-in step; the download manager offers **Retry & continue**. Per-item *Retry*, *Cancel
 remaining*, and *Stop after current* are available in the popover.
@@ -138,8 +139,9 @@ the list. Closing the popover does not stop the queue, and the selection pill hi
 
 ### Honest percentage
 
-`percentage = done / total` where `done` counts only `saved`/`exists`/`renamed`. Skipped and
-failed items are surfaced as badges, never folded into the percentage.
+The queue progress bar counts only files with `saved`, `exists`, or `renamed` status. A finished
+selection contributes `filesDone / filesTotal`; a fully successful or empty-folder selection
+contributes one complete queue item. Skipped and failed files do not increase the percentage.
 
 ## Design system
 

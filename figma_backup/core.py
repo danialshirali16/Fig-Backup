@@ -142,13 +142,13 @@ def native_extension(editor_type: str | None) -> str:
     return EDITOR_EXTENSIONS.get(str(editor_type or "").lower(), ".fig")
 
 
-def verify_fig(path: Path, check_head: bool = True) -> int:
+def verify_fig(path: Path) -> int:
     size = path.stat().st_size
     if size <= 1024:
         raise FigmaError(f"Downloaded file is too small: {path.name} ({size} bytes)")
     with path.open("rb") as stream:
         head = stream.read(8)
-    if check_head and head.startswith((b"<", b"{")):
+    if head.startswith((b"<", b"{")):
         raise FigmaError(f"Downloaded file appears to be an HTML/JSON error response: {path.name}")
     return size
 
