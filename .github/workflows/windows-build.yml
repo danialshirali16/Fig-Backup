@@ -29,7 +29,7 @@ jobs:
       - name: Package Windows app
         run: >-
           python -m PyInstaller --noconfirm --windowed --onedir
-          --name "Fig Backup" --icon app-icon-windows.ico
+          --name "Fig Backup" --icon "$env:GITHUB_WORKSPACE\app-icon-windows.ico"
           --distpath release --workpath .build --specpath .build
           --add-data "$env:GITHUB_WORKSPACE\dist;dist"
           --collect-all playwright --collect-all webview
