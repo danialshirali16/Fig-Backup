@@ -26,9 +26,9 @@ const foldersByParent = {
 }
 
 const filesByFolder = {
-  '20001': [{ key: 'sample-01', name: 'App Screens' }, { key: 'sample-02', name: 'Navigation' }],
+  '20001': [{ key: 'sample-01', name: 'App Screens' }, { key: 'sample-02', name: 'Navigation', editorType: 'figjam' }],
   '20002': [{ key: 'sample-03', name: 'Foundations' }, { key: 'sample-04', name: 'UI Kit' }],
-  '20003': [{ key: 'sample-05', name: 'Early Concepts' }],
+  '20003': [{ key: 'sample-05', name: 'Early Concepts', editorType: 'slides' }],
   '20004': [{ key: 'sample-06', name: 'Logo Library' }],
   '20005': [{ key: 'sample-07', name: 'Summer Campaign' }],
   '30001': [{ key: 'sample-08', name: 'Welcome Flow' }],
@@ -51,6 +51,10 @@ export function installPreviewBridge() {
   const params = new URLSearchParams(window.location.search)
   const fakeInstall = params.has('browser-install')
   const fakeWindows = params.has('win-titlebar')
+  const slowMode = params.has('slow')
+  let failFirstRun = params.has('fail')
+  let stopRun = null
+  const lag = () => new Promise(resolve => window.setTimeout(resolve, slowMode ? 1200 : 0))
   let browserState = fakeInstall ? { phase: 'setting_up', message: '' } : { phase: 'ready', message: '' }
   if (fakeInstall) {
     window.setTimeout(() => { browserState = { phase: 'ready', message: '' } }, 6000)
@@ -65,7 +69,7 @@ export function installPreviewBridge() {
     platform: fakeWindows ? 'edgechromium' : 'browser-preview',
     api: {
       bootstrap: async () => ({ has_token: true, teams: previewTeams, preferences, browser: { ...browserState } }),
-      discover_teams: async () => ({ teams: previewTeams, auth_required: false }),
+      discover_teams: async () => lag().then(() => ({ teams: previewTeams, auth_required: false })),
       save_preferences: async changes => (preferences = { ...preferences, ...changes }),
       save_token: async () => ({ name: 'Preview user' }),
       open_sign_in: async () => ({ opened: false }),
@@ -78,15 +82,66 @@ export function installPreviewBridge() {
       },
       close_window: async () => ({ ok: true }),
       begin_resize: async () => ({ ok: false }),
-      folders: async id => ({ folders: foldersByParent[id] || [], legacy: false }),
-      subfolders: async id => ({ folders: foldersByParent[id] || [], unavailable: false }),
-      files: async id => ({ files: filesByFolder[id] || [], unavailable: false }),
+      folders: async id => lag().then(() => ({ folders: foldersByParent[id] || [], legacy: false })),
+      subfolders: async id => lag().then(() => ({ folders: foldersByParent[id] || [], unavailable: false })),
+      files: async id => lag().then(() => ({ files: filesByFolder[id] || [], unavailable: false })),
       start_download: async () => {
-        status = { ...idleStatus(), phase: 'done', finished: true, total: 1, saved: 1,
-          items: [{ status: 'saved' }], message: 'Preview complete' }
+        // Simulate the real lifecycle: scanning, then per-file checking/opening/preparing/saving.
+        const files = ['Home Screen', 'Navigation', 'Profile Settings']
+        const sizes = [24.8, 71, 3.2].map(mb => Math.round(mb * 1024 * 1024))
+        const run = { running: true, total: files.length, saved: 0, existing: 0, skipped: 0, failed: 0,
+          destination: '~/Downloads/Fig Backup/Product Design', finished: false }
+        status = { ...run, phase: 'scanning', items: [], message: 'Collecting files…' }
+        let tick = 2600
+        let stopped = false
+        const at = (ms, fn) => window.setTimeout(() => { if (!stopped) fn() }, ms)
+        stopRun = () => {
+          if (stopped || status.finished) return
+          stopped = true
+          window.setTimeout(() => {
+            status = { ...status, running: false, phase: 'stopped', finished: true, message: 'Stopped after the current file' }
+          }, 500)
+        }
+        const savedUpTo = index => files.map((other, position) => ({
+          name: other,
+          status: position < index ? 'saved' : position === index ? null : 'queued',
+          detail: position < index ? `~/Downloads/Fig Backup/Product Design/${other}.fig` : '',
+          size: position < index ? sizes[position] : 0,
+        }))
+        if (failFirstRun) {
+          failFirstRun = false
+          at(4400, () => {
+            status = { ...status, phase: 'downloading', message: files[1],
+              items: savedUpTo(1).map((it, position) => position === 1 ? { ...it, status: 'failed', detail: 'Figma blocked the background editor (HTTP 403)' } : it) }
+          })
+          at(5600, () => {
+            status = { ...status, running: false, phase: 'error', finished: true, failed: 1, message: files[1] }
+          })
+          return { started: true }
+        }
+        files.forEach((name, index) => {
+          for (const step of ['checking', 'opening', 'preparing', 'saving']) {
+            at(tick, () => {
+              status = { ...status, phase: 'downloading', message: name,
+                items: savedUpTo(index).map((it, position) => position === index ? { ...it, status: step } : it) }
+            })
+            tick += step === 'opening' ? 1900 : 900
+          }
+        })
+        at(tick + 600, () => {
+          status = { ...status, running: false, phase: 'done', finished: true, message: 'Preview complete',
+            items: files.map((other, position) => ({
+              name: other, status: 'saved',
+              detail: `~/Downloads/Fig Backup/Product Design/${other}.fig`,
+              size: sizes[position],
+            })) }
+        })
         return { started: true }
       },
-      stop_download: async () => ({ stopped: true }),
+      stop_download: async () => {
+        stopRun?.()
+        return { stopping: true }
+      },
       status: async () => ({ ...status, browser: { ...browserState } }),
       open_destination: async () => ({ opened: false }),
       open_downloads: async () => ({ opened: false }),

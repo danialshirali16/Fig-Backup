@@ -16,6 +16,9 @@ from playwright._impl._errors import TargetClosedError
 from .browser import Browser, chromium_ready
 from .core import APP_SUPPORT, BrowserAuthError, DOWNLOADS, SUPPORT, ArchiveIndex, FigmaClient, FigmaError, PreferencesStore, TokenStore, TreeArchiveIndex, merge_teams, read_json, team_id_from_input, write_json
 
+# Editor types this app can export via the web editor's "Save local copy".
+SUPPORTED_EDITOR_TYPES = ("figma", "figjam", "slides")
+
 
 class Bridge:
     def __init__(self):
@@ -143,6 +146,17 @@ class Bridge:
     def files(self, folder_id: str) -> dict:
         client = self._required()
         files = client.files(folder_id)
+        # The listings don't expose the editor type; resolve it (cached per key)
+        # so the UI can show the right file-type icon.
+        for file in files:
+            if not file.get("key") or file.get("editorType") or file.get("editor_type"):
+                continue
+            try:
+                kind = client.editor_type(file)
+                if kind:
+                    file["editorType"] = kind
+            except FigmaError:
+                continue
         return {"files": files, "unavailable": str(folder_id) in client.unavailable_subfolders}
 
     def start_download(self, selection: dict) -> dict:
@@ -205,7 +219,7 @@ class Bridge:
             items = [{"key": file["key"], "name": file.get("name") or "Untitled", "status": "queued", "detail": ""}
                      for file in files if file.get("key")]
             self._set(items=items, total=len(items), phase="downloading",
-                      destination=destination, message="Download queue is ready" if items else "No design files were found")
+                      destination=destination, message="Download queue is ready" if items else "No supported files were found")
             for position, file in enumerate(files):
                 if not file.get("key"):
                     continue
@@ -219,12 +233,13 @@ class Bridge:
                     self.state["message"] = file.get("name") or "Untitled"
                 try:
                     kind = client.editor_type(file)
-                    if kind != "figma":
+                    if kind not in SUPPORTED_EDITOR_TYPES:
                         with self.lock:
                             item["status"] = "skipped"
                             item["detail"] = f"File type: {kind or 'unknown'}"
                             self.state["skipped"] += 1
                         continue
+                    file = {**file, "editorType": kind or ""}
                     def progress(status: str, detail: str) -> None:
                         with self.lock:
                             item["status"] = status
@@ -238,6 +253,7 @@ class Bridge:
                     with self.lock:
                         item["status"] = result["status"]
                         item["detail"] = result["path"]
+                        item["size"] = int(result.get("size") or 0)
                         self.state["saved" if result["status"] == "saved" else "existing"] += 1
                 except BrowserAuthError as error:
                     with self.lock:
@@ -281,6 +297,24 @@ class Bridge:
             os.startfile(str(target))
         else:
             subprocess.Popen(["open", str(target)])
+        return {"opened": True}
+
+    def open_path(self, path: str) -> dict:
+        """Reveal one downloaded file in Finder/Explorer, or open its folder."""
+        target = Path(path).expanduser().resolve()
+        if not target.is_relative_to(DOWNLOADS.resolve()):
+            raise FigmaError("The backup destination is outside Downloads")
+        if not target.exists():
+            raise FigmaError("That file no longer exists on disk")
+        if sys.platform == "win32":
+            if target.is_dir():
+                os.startfile(str(target))
+            else:
+                subprocess.Popen(["explorer", f"/select,{target}"], creationflags=subprocess.CREATE_NO_WINDOW)
+        elif target.is_dir():
+            subprocess.Popen(["open", str(target)])
+        else:
+            subprocess.Popen(["open", "-R", str(target)])
         return {"opened": True}
 
     def shutdown(self, grace_seconds: float = 3.0, exit_now=os._exit) -> None:

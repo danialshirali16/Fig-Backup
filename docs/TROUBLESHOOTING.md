@@ -55,8 +55,9 @@ Chromium (~150 MB) is downloaded once, at first launch.
 - **"Figma restricted this subfolder list" (HTTP 451)** — Figma doesn't expose subfolder listing
   for some regions/accounts. The backup still saves everything that *was* listed; the app warns
   that the result may be incomplete.
-- **Files skipped as "Not a design file"** — only Figma design files are backed up; FigJam boards
-  and other editor types are skipped.
+- **Files skipped as "Unsupported file type"** — Figma Design, FigJam, and Slides files are
+  backed up (as `.fig`, `.jam`, and `.deck` native copies respectively); any other Figma editor
+  type is skipped and listed with its type in the download manager.
 - **"Already saved"** — the file already exists in the destination, so it wasn't downloaded again.
   Delete the old file to force a fresh copy.
 - **Unexpected `name(1).fig` names** — name collisions in the destination are resolved by

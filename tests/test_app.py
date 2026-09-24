@@ -22,7 +22,8 @@ class Client:
 
     def all_files(self, folder):
         return [{'key': 'a', 'name': 'A', 'editorType': 'figma'},
-                {'key': 'b', 'name': 'B', 'editorType': 'figjam'}]
+                {'key': 'b', 'name': 'B', 'editorType': 'figjam'},
+                {'key': 'c', 'name': 'C', 'editorType': 'library'}]
 
     def files(self, folder_id):
         return self.all_files({'id': folder_id})
@@ -65,8 +66,8 @@ class BridgeTests(unittest.TestCase):
                                   'folder': {'id': '44', 'name': 'Folder'}})
         state = bridge.status()
         self.assertEqual(state['phase'], 'done')
-        self.assertEqual((state['saved'], state['skipped'], state['failed']), (1, 1, 0))
-        self.assertEqual([item['status'] for item in state['items']], ['saved', 'skipped'])
+        self.assertEqual((state['saved'], state['skipped'], state['failed']), (2, 1, 0))
+        self.assertEqual([item['status'] for item in state['items']], ['saved', 'saved', 'skipped'])
         self.assertTrue(state['warning'])
 
     def test_browser_close_retries_once(self):

@@ -4,6 +4,16 @@
 @import './styles/style-nova.css' layer(base);
 @import './figma-theme.css';
 
+/* Persian/RTL typeface (bundled — the app never loads remote assets).
+   Variable weight 100–900, SIL OFL 1.1 (see src/assets/fonts/OFL.txt). */
+@font-face {
+  font-family: 'Vazirmatn';
+  src: url('./assets/fonts/Vazirmatn-Variable.woff2') format('woff2-variations');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
 /*
   shadcn/ui "nova" style on Tailwind v4, with the @create-figma-plugin/ui theme:
   every color below is wired to a --figma-color-* token (see figma-theme.css),
@@ -46,15 +56,26 @@
   --sidebar-accent-foreground: var(--figma-color-text);
   --sidebar-border: var(--figma-color-border);
   --sidebar-ring: var(--figma-color-bg-brand);
+  --graphic-accent: var(--primary);
   --radius: 0.625rem;
 }
 
 :root.dark {
+  /* 85% (not the light-mode 76%): the dark brand base is already darker, so it
+     needs less AA trimming for white 14px labels — #0A77C6 at 4.70:1 is the
+     lightest mix with margin (the AA ceiling sits at ~87%, too tight to ship). */
+  --primary: color-mix(in srgb, var(--figma-color-bg-brand) 85%, black);
+  /* Figma's own dark hover token (#0a6dc2, 5.28:1) — calmer than a black mix. */
+  --primary-hover: var(--figma-color-bg-brand-hover);
   --brand-text: var(--figma-color-text-brand);
   --muted-foreground: var(--figma-color-text-secondary);
   --destructive: var(--figma-color-text-danger);
   --success: var(--figma-color-text-success);
   --ring: var(--figma-color-text-brand);
+  /* Thin brand graphics (progress ring, setup bar) need ~3:1 surface contrast
+     that the AA-limited button fill can't give; the light brand text token
+     (#7cc4f8) reads ~6:1 on the dark card. */
+  --graphic-accent: var(--figma-color-text-brand);
 }
 
 @theme inline {
@@ -86,7 +107,7 @@
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
   /* Font tokens from @create-figma-plugin/ui base.css */
-  --font-sans: 'Inter', 'Helvetica', sans-serif;
+  --font-sans: 'Inter', 'Helvetica', 'Hiragino Kaku Gothic ProN', 'Yu Gothic UI', 'Malgun Gothic', 'Apple SD Gothic Neo', sans-serif;
   --font-mono: 'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas', 'Liberation Mono', 'Courier New', monospace;
   --radius-lg: var(--radius);
   --radius-md: calc(var(--radius) - 2px);
@@ -103,12 +124,24 @@
 
   .cn-button-variant-default:hover { background-color: var(--primary-hover); }
 
+  /* nova paints link buttons with text-primary, but dark --primary is a
+     fill-only blue (2.97:1 as text on the dark bg); links read in the
+     accent blue instead (7.4:1). */
+  :root.dark .cn-button-variant-link { color: var(--brand-text); }
+
   ::selection { background-color: var(--figma-color-bg-onselected); }
 
   /* RTL: progress fills from the trailing side like native RTL progress bars */
   [dir='rtl'] [data-slot='progress'] { transform: scaleX(-1); }
+  /* RTL: the header download mini-bar fills from the trailing side too */
+  [dir='rtl'] .dl-progress { transform: scaleX(-1); }
   /* RTL: select check indicator sits on the start side */
   [dir='rtl'] .cn-select-item-indicator { right: auto; left: 0.5rem; }
+}
+
+/* RTL: Persian text renders in the bundled Vazirmatn (Inter stays for LTR). */
+[dir='rtl'] body {
+  font-family: 'Vazirmatn', 'Inter', 'Helvetica', 'Hiragino Kaku Gothic ProN', 'Yu Gothic UI', 'Malgun Gothic', 'Apple SD Gothic Neo', sans-serif;
 }
 
 /* Keep the macOS traffic lights clear when the web header fills the titlebar. */
@@ -123,24 +156,19 @@
    the sweep never implies progress). RTL mirrors the sweep direction. */
 .setup-bar-track { transform-origin: center; }
 [dir='rtl'] .setup-bar-track { transform: scaleX(-1); }
+:root.dark .setup-bar-track { background-color: rgb(255 255 255 / 0.1); }
 
 .setup-bar-fill {
   width: 33%;
-  background-color: var(--primary);
+  background-color: var(--graphic-accent);
 }
-
-/* Dark primary is a deep blue that vanishes on the tinted card; the light
-   brand text token is the same accent the spinner uses (~7:1 there). */
-:root.dark .setup-bar-fill { background-color: var(--figma-color-text-brand); }
-:root.dark .setup-bar-track { background-color: rgb(255 255 255 / 0.1); }
 
 @media (prefers-reduced-motion: no-preference) {
   .setup-bar-fill { animation: setup-bar-sweep 1.6s ease-in-out infinite; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .setup-bar-fill { background-color: color-mix(in srgb, var(--primary) 40%, transparent); }
-  :root.dark .setup-bar-fill { background-color: color-mix(in srgb, var(--figma-color-text-brand) 40%, transparent); }
+  .setup-bar-fill { background-color: color-mix(in srgb, var(--graphic-accent) 40%, transparent); }
 }
 
 @keyframes setup-bar-sweep {

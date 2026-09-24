@@ -43,7 +43,8 @@ window* (same as wizard step 2). During browser setup a status banner takes that
 the backup browser”, or its danger variant with *Retry setup* on failure); the list area shows
 “Finding your teams…” instead of the empty state until setup settles.
 
-Row click → Browse for that team.
+Row click → Browse for that team. While the team switcher is being scraped (Refresh or first
+launch), the list is replaced by skeleton rows.
 
 ## Browse (folders & files)
 
@@ -53,11 +54,13 @@ trailing edge depend on context:
 | Context | Actions |
 | --- | --- |
 | Team root, not selecting | *Download all* (primary) + *Select* |
-| Inside a folder, not selecting | *Back up this folder* + *Select* |
+| Inside a folder, not selecting | *Download all* + *Select* |
 | Select mode | tri-state **Select-all** checkbox + “N of M selected” + *Done* |
 
 Content uses the same borderless, rounded row style as Teams. Folders appear first in alphabetical order, followed by files in
-alphabetical order. There are no section headers or download-location note.
+alphabetical order. There are no section headers or download-location note. While a team or folder
+listing loads, seven skeleton rows (pulsing tile + two lines, `role="status"`) replace the list —
+navigation happens instantly and the data fills in.
 
 - **Not selecting** — clicking a folder row opens it (chevron affordance); per-row buttons offer
   single *Back up* (folder, recursive) and *Download*.
@@ -88,22 +91,34 @@ Hidden while the download manager is open.
 
 ## Backups: download manager
 
-The download icon in the top bar opens the **download manager popover**. Backup progress appears
-there without a persistent bottom bar:
+The download icon in the top bar opens the **Downloads popover** (375px), modelled on a browser
+download manager (see the Figma source of truth):
 
-- Header: “Download manager” + item count; a progress ring, run title + current file,
-  “*done* of *total*”, and destination path (`~/Downloads/Fig Backup/<Team>/`) when a queue exists.
-  While the one-time browser setup runs, the ring is temporarily replaced by a spinner block with
-  the setup status (danger variant + *Retry setup* on failure); queue items cannot start yet, and a
-  running item reads “Waiting for one-time setup…”.
-- One row per queued item: `Team`/`Folder`/`File` chip, name, live status
-  (`Queued → Running → Saved | Failed`), error detail on failures, per-row **Retry**.
-- Footer: **Retry & continue** (after failures), **Cancel remaining (*k*)** (with a confirmation), **Stop after
-  current** (while running), **Open Downloads**, and **Open backup folder** when a queue exists.
+- Header: “Downloads”, a **Clear** button (disabled until something is finished; it removes only
+  finished rows — queued and running items are never touched), and close.
+- One-time browser setup states render as slim banners between the header and the list (spinner
+  card while installing, danger card + full-width *Retry setup* on failure, a one-line “Browser
+  ready” flash for 2.5s after success).
+- The list is split into two counted sections: **In Progress** (queued, running, failed, stopped)
+  and **Completed** (done). Each row: a 28px icon (the real Figma file icon for files; muted
+  `Users`/`Folder` tile for teams/folders), the name, and a **status caption** underneath —
+  “Queue” while queued; the live export stage while running, using the design's exact wording
+  (*Opening file... → Downloading assets... → Bundling...*), with “Collecting files…” plus an
+  elapsed m:ss counter during the scanning phase, and a “*done* of *total* files” suffix for
+  folder/team items); the
+  error text for failures; and the **file size** (or the file count for folder/team rows) once
+  done.
+- Trailing per-row actions: queued rows show **Cancel** (remove from queue) and **Download
+  next** (play — runs that item first) on hover or keyboard focus; the running row shows a spinner
+  that swaps to **Cancel** (stop after current) the same way; completed rows show **Show in folder**
+  (reveals the file in Finder/Explorer) on hover; failed/stopped rows always show **Cancel**
+  (dismiss the row) and **Retry** (`refresh-cw`), with their error caption in the danger color —
+  the error state per the Figma source of truth. The **Clear** header button renders only while
+  completed rows exist.
 
 Items run **sequentially** (folders first, then files). Closing the popover never affects the run;
-Esc closes it and returns focus to the control that opened it. The popover is non-modal, so the rest of
-the app remains available while a backup runs.
+Esc closes it and returns focus to the control that opened it. The popover is non-modal, so the rest
+of the app remains available while a backup runs.
 
 ## Settings
 
@@ -131,11 +146,19 @@ the app remains available while a backup runs.
 - **Icons**: lucide only, one stroke weight, sized 14–16px; decorative icons are `aria-hidden`.
 - **Motion**: 150ms color feedback, `active:translate-y-px` on buttons and progress-ring updates;
   spinners and ring transitions respect `prefers-reduced-motion`.
+- **Fly-to-queue** (row download feedback): clicking a row's Download/Back up control flies a
+  clone of the row's tile into the Downloads trigger — 400ms, `cubic-bezier(0.3, 0, 0.2, 1)`,
+  scale 1 → 0.5, opacity fades in the last 35%; the trigger icon bumps 1.06× for 180ms on arrival
+  (skipped while the manager is open). Reduced motion: 150ms accent tick + a polite live-region
+  announcement instead.
 
 ## Internationalization (i18n)
 
-- All copy lives in `src/i18n.js` (`en` / `fa` objects); `translate(lang, key, values)`
-  interpolates `{placeholders}`. Add new strings to **both** languages.
+- All copy lives in `src/i18n.js` + `src/i18n-languages-{a,b}.js` — nine languages matching
+  Figma's list: English, فارسی (RTL), 日本語, Français, Deutsch, Español (España),
+  Español (Latinoamérica), 한국어, Português (Brasil). `translate(lang, key, values)`
+  interpolates `{placeholders}` and falls back to English. Add new strings to **all nine**
+  languages (the language list itself lives in the exported `LANGUAGES` meta).
 - Direction: `<html dir>` flips to `rtl` for Persian. Layout uses logical utilities
   (`ms-*`, `pe-*`, `start/end`); chevrons mirror via `rtl:-scale-x-100`; the progress fill and
   the select checkmark are repositioned by two CSS patches in `index.css`.

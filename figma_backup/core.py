@@ -83,7 +83,7 @@ class TokenStore:
 class PreferencesStore:
     """Local presentation preferences; a missing file means onboarding is pending."""
 
-    LANGUAGES = {"en", "fa"}
+    LANGUAGES = {"en", "fa", "ja", "fr", "de", "es", "es-419", "ko", "pt-BR"}
     THEMES = {"system", "light", "dark"}
 
     def __init__(self, support: Path = APP_SUPPORT):
@@ -133,13 +133,22 @@ def team_id_from_input(value: str) -> str | None:
     return match.group(1) if match else None
 
 
-def verify_fig(path: Path) -> int:
+# Native container each editor's "Save local copy" produces.
+EDITOR_EXTENSIONS = {"figma": ".fig", "figjam": ".jam", "slides": ".deck"}
+NATIVE_EXTENSIONS = tuple(EDITOR_EXTENSIONS.values())
+
+
+def native_extension(editor_type: str | None) -> str:
+    return EDITOR_EXTENSIONS.get(str(editor_type or "").lower(), ".fig")
+
+
+def verify_fig(path: Path, check_head: bool = True) -> int:
     size = path.stat().st_size
     if size <= 1024:
         raise FigmaError(f"Downloaded file is too small: {path.name} ({size} bytes)")
     with path.open("rb") as stream:
         head = stream.read(8)
-    if head.startswith((b"<", b"{")):
+    if check_head and head.startswith((b"<", b"{")):
         raise FigmaError(f"Downloaded file appears to be an HTML/JSON error response: {path.name}")
     return size
 
@@ -156,6 +165,7 @@ class ArchiveIndex:
 
     def target(self, file: dict) -> tuple[Path, bool]:
         key = str(file["key"])
+        extension = native_extension(file.get("editorType"))
         if key in self.names:
             return self.downloads / self.names[key], False
         base = clean_name(file.get("name"))
@@ -163,7 +173,7 @@ class ArchiveIndex:
         number = 0
         while True:
             suffix = f"({number})" if number else ""
-            filename = f"{base}{suffix}.fig"
+            filename = f"{base}{suffix}{extension}"
             if filename.casefold() not in reserved and not (self.downloads / filename).exists():
                 break
             number += 1
@@ -269,7 +279,7 @@ class TreeArchiveIndex:
         relative = directory.relative_to(self.root)
         reserved = {Path(value).name.casefold() for value in self.files.values()
                     if Path(value).parent == relative}
-        name = self._available_name(clean_name(file.get("name")), reserved, directory, ".fig")
+        name = self._available_name(clean_name(file.get("name")), reserved, directory, native_extension(file.get("editorType")))
         destination = directory / name
         self.files[key] = (relative / name).as_posix()
         self._save()
@@ -282,6 +292,7 @@ class FigmaClient:
         self.request_get = request_get or requests.get
         self.folder_api = "v2"
         self.unavailable_subfolders: set[str] = set()
+        self._editor_type_cache: dict[str, str] = {}
 
     def get(self, endpoint: str) -> dict:
         for attempt in range(6):
@@ -398,12 +409,19 @@ class FigmaClient:
     def editor_type(self, file: dict) -> str | None:
         if file.get("editorType") or file.get("editor_type"):
             return file.get("editorType") or file.get("editor_type")
-        key = quote(str(file["key"]), safe="")
+        key_str = str(file["key"])
+        cached = self._editor_type_cache.get(key_str)
+        if cached:
+            return cached
+        key = quote(key_str, safe="")
         try:
             body = self.get(f"/v1/files/{key}/meta")
             data = body.get("file") or {}
-            return data.get("editorType") or data.get("editor_type")
+            kind = data.get("editorType") or data.get("editor_type")
         except FigmaError as error:
             if error.status != 403:
                 raise
-            return self.get(f"/v1/files/{key}?depth=1").get("editorType")
+            kind = self.get(f"/v1/files/{key}?depth=1").get("editorType")
+        if kind:
+            self._editor_type_cache[key_str] = kind
+        return kind

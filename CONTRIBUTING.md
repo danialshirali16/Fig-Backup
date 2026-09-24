@@ -26,8 +26,9 @@ npm run build
 ## Conventions
 
 - **Interface strings live in `src/i18n.js`.** Every new key must be added to *all* language
-  objects there — the UI looks up keys in the active language, and a missing key breaks that
-  language.
+  objects there (English and فارسی in `i18n.js`, the other seven in `src/i18n-languages-*.js`) —
+  the UI looks up keys in the active language and falls back to English only when a key is
+  missing entirely from a language.
 - **`dist/` is tracked in git on purpose.** The `Fig Backup.command` launcher and the packaged apps
   load the built interface from it. If you change anything under `src/`, run `npm run build` and
   commit the rebuilt `dist/` in the same change.

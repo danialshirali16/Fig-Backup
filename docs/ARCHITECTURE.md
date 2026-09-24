@@ -27,12 +27,13 @@ class in `figma_backup/app.py`), and the Bridge runs all browser work on a singl
 | `add_team(link, name)` | Register a team by URL/ID |
 | `folders(team_id)` | v2 Folders API with fallback to legacy v1 Projects API |
 | `subfolders(folder_id)` | Child folders; marks HTTP 451 folders unavailable |
-| `files(folder_id)` | Files in a folder (v2 or v1 depending on fallback) |
+| `files(folder_id)` | Files in a folder (v2 or v1 depending on fallback), enriched with each file's `editorType` (cached) for the file-type icons |
 | `open_sign_in()` | Visible Chromium window on figma.com/files for one-time sign-in |
 | `start_download(selection)` | Start one backup; scopes: `{team, scope:'team'}` / `{scope:'folder', folder}` / `{scope:'file', folder, file_key}` |
 | `stop_download()` | Ask the current run to stop after the active file |
 | `status()` | Snapshot `{running, phase, items, total, saved, existing, skipped, failed, message, destination, finished, browser}` |
 | `open_destination()` / `open_downloads()` | Reveal folders in Finder |
+| `open_path(path)` | Reveal one downloaded file in Finder/Explorer (or open its folder); must live under Downloads |
 
 `start_download` supports a **single scope per call**. Multi-select backups are implemented in the
 UI as a sequential queue of per-item `start_download` calls (see “Backup queue” below).
@@ -48,7 +49,13 @@ UI as a sequential queue of per-item `start_download` calls (see “Backup queue
 - **Recursion**: `walk_tree(roots)` returns deduplicated files (each tagged with its ancestor
   folder path) plus every visited folder path — used for team/folder backups and archive
   pre-creation.
-- **editorType check**: files whose editor type is not `figma` (e.g. FigJam) are skipped.
+- **editorType check**: only supported editor types (Figma Design, FigJam, Slides) are downloaded;
+  each editor opens under its own route (`/design/`, `/file/` → redirects to `/board/` for FigJam,
+  `/slides/`), and any other file type is skipped with its type noted in the queue. Each editor's
+  "Save local copy" yields its own native container — `.fig`, `.jam` (FigJam), `.deck` (Slides) —
+  and downloads are named and verified accordingly. FigJam boards can crash the headless browser
+  on first attempt; the existing Chromium-crash retry (which switches to the headless shell) picks
+  them up.
 - `verify_fig(path)` rejects files ≤ 1 KB or HTML/JSON error responses.
 
 ## Browser automation (`browser.py`)

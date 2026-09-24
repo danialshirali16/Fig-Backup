@@ -14,7 +14,7 @@ from playwright.sync_api import sync_playwright
 from playwright._impl._driver import compute_driver_executable
 from playwright._impl._errors import TargetClosedError
 
-from .core import ArchiveIndex, BrowserAuthError, FigmaError, SUPPORT, merge_teams, verify_fig
+from .core import ArchiveIndex, BrowserAuthError, FigmaError, NATIVE_EXTENSIONS, SUPPORT, merge_teams, native_extension, verify_fig
 
 # Children of a windowed exe must not allocate a console (the Playwright
 # installer and its node.exe driver are console-subsystem programs).
@@ -300,15 +300,20 @@ class Browser:
         save.click(timeout=10000)
 
     def download(self, file: dict, index: ArchiveIndex, progress) -> dict:
+        extension = native_extension(file.get("editorType"))
         destination, migrated = index.target(file)
         if destination.exists():
-            verify_fig(destination)
+            verify_fig(destination, check_head=(extension == ".fig"))
             return {"status": "renamed" if migrated else "exists", "path": str(destination)}
         if self.context is None or not self.headless:
             self.open(headless=True)
         progress("opening", "Opening the file in Figma…")
+        # Editor routes: design uses /design/, slides /slides/, FigJam boards live
+        # under /board/ (reached via the /file/ redirect — /figjam/ now 404s).
+        segment = {"figma": "design", "figjam": "file", "slides": "slides"}.get(
+            str(file.get("editorType") or "").lower(), "design")
         response = self.page.goto(
-            f"https://www.figma.com/design/{file['key']}",
+            f"https://www.figma.com/{segment}/{file['key']}",
             wait_until="domcontentloaded", timeout=90000,
         )
         if response and response.status == 403:
@@ -333,13 +338,13 @@ class Browser:
             except Exception:
                 pass
             raise FigmaError(f"The local-copy download did not start: {str(error).splitlines()[0]}") from error
-        if not download.suggested_filename.lower().endswith(".fig"):
+        if not download.suggested_filename.lower().endswith(NATIVE_EXTENSIONS):
             raise FigmaError(f"Figma returned an unexpected file: {download.suggested_filename}")
         temporary = destination.with_name(destination.name + ".partial")
         try:
             progress("saving", "Saving to Downloads…")
             download.save_as(str(temporary))
-            size = verify_fig(temporary)
+            size = verify_fig(temporary, check_head=(extension == ".fig"))
             temporary.replace(destination)
         finally:
             temporary.unlink(missing_ok=True)

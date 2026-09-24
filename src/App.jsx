@@ -2,8 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Popover as PopoverPrimitive } from 'radix-ui'
 import { toast } from 'sonner'
 import {
-  AlertTriangle, Check, CheckCircle2, ChevronRight, Clock, Copy, Download, ExternalLink,
-  Folder, Loader2, Minus, PenTool, RefreshCw, RotateCcw, Settings as SettingsIcon,
+  AlertTriangle, Check, CheckCircle2, ChevronRight, Copy, Download, ExternalLink,
+  Folder, FolderInput, Loader2, Minus, Play, RefreshCw, RotateCcw, Settings as SettingsIcon,
   ShieldCheck, Square, X,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -15,8 +15,12 @@ import { Card } from '@/components/ui/card'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Toaster } from '@/components/ui/sonner'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { translate } from './i18n'
+import { translate, LANGUAGES, RTL_LANGUAGES } from './i18n'
 import { downloadFailureDescription } from './download-errors'
+import { flyToQueue, cancelAllFlights } from './fly-to-queue'
+import iconFileDesign from './assets/figma-file-design.png'
+import iconFileSlides from './assets/figma-file-slides.png'
+import iconFileFigjam from './assets/figma-file-figjam.png'
 
 const DONE_STATES = ['saved', 'exists', 'renamed']
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms))
@@ -24,23 +28,30 @@ const firstLine = (text) => String(text || '').split('\n')[0].replace(/^Error:\s
 const isSigninIssue = (text) => /sign-in|background editor.*403/i.test(String(text || ''))
 const isInstallIssue = (text) => /chromium|installation failed/i.test(String(text || ''))
 
+/* Official Figma file-type icons; unknown/legacy editor types read as Design. */
+const FILE_ICONS = { figma: iconFileDesign, slides: iconFileSlides, figjam: iconFileFigjam }
+
+/* Per-file export lifecycle captions shown under the running row's name —
+   wording is the Figma design's, verbatim. */
+const STEP_KEY = { checking: 'stepOpening', opening: 'stepOpening', preparing: 'stepDownloadingAssets', saving: 'stepBundling', retrying: 'stepRetrying' }
+const LIVE_FILE_STATES = [...Object.keys(STEP_KEY)]
+
+const fmtBytes = (bytes) => {
+  if (!bytes || bytes <= 0) return ''
+  const units = ['B', 'KB', 'MB', 'GB']
+  let value = bytes
+  let unit = 0
+  while (value >= 1024 && unit < units.length - 1) { value /= 1024; unit += 1 }
+  return `${value >= 100 || unit === 0 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`
+}
+
+function FileIcon({ editorType, className = 'size-8 shrink-0', ...rest }) {
+  return <img src={FILE_ICONS[editorType] ?? iconFileDesign} alt="" aria-hidden="true" draggable="false" className={className} {...rest} />
+}
+
 function bridgeReady() {
   if (window.pywebview?.api?.bootstrap) return Promise.resolve(window.pywebview.api)
   return new Promise(resolve => window.addEventListener('pywebviewready', () => resolve(window.pywebview.api), { once: true }))
-}
-
-function Ring({ value, label, name }) {
-  const r = 14
-  const c = 2 * Math.PI * r
-  return (
-    <span role="progressbar" aria-label={name} aria-valuemin="0" aria-valuemax="100" aria-valuenow={value} className="relative inline-block size-9 flex-none">
-      <svg width="36" height="36" viewBox="0 0 36 36" className="-rotate-90" aria-hidden="true">
-        <circle cx="18" cy="18" r={r} fill="none" strokeWidth="3" className="stroke-muted" />
-        <circle cx="18" cy="18" r={r} fill="none" strokeWidth="3" strokeLinecap="round" className="stroke-primary motion-safe:transition-[stroke-dasharray] motion-safe:duration-150" strokeDasharray={`${(c * value) / 100} ${c}`} />
-      </svg>
-      <span aria-hidden="true" className="absolute inset-0 grid place-items-center text-[10px] font-bold tabular-nums">{label}%</span>
-    </span>
-  )
 }
 
 function SetupBar() {
@@ -48,6 +59,23 @@ function SetupBar() {
     <span aria-hidden="true" className="setup-bar-track mt-3 block h-1 overflow-hidden rounded-full bg-muted">
       <span className="setup-bar-fill block h-full rounded-full" />
     </span>
+  )
+}
+
+/* Skeleton list rows shown while a team/folder listing is being fetched. */
+function SkeletonRows({ count = 3, label }) {
+  return (
+    <div role="status" aria-label={label}>
+      {Array.from({ length: count }, (_, index) => (
+        <div key={index} className="flex items-center gap-3 px-3 py-2.5" aria-hidden="true">
+          <span className="size-8 shrink-0 rounded-lg bg-muted motion-safe:animate-pulse" />
+          <span className="min-w-0 flex-1 space-y-1.5">
+            <span className="block h-3 w-40 max-w-full rounded bg-muted motion-safe:animate-pulse" />
+            <span className="block h-2.5 w-24 rounded bg-muted motion-safe:animate-pulse" />
+          </span>
+        </div>
+      ))}
+    </div>
   )
 }
 
@@ -109,12 +137,12 @@ const RESIZE_EDGES = [
   ['bottom-0 left-0 size-2 cursor-sw-resize', 16], ['bottom-0 right-0 size-2 cursor-se-resize', 17],
 ]
 
-function TeamAvatar({ team }) {
+function TeamAvatar({ team, className = 'size-8' }) {
   const [failed, setFailed] = useState(false)
   useEffect(() => setFailed(false), [team.avatar])
   const avatar = typeof team.avatar === 'string' && team.avatar.startsWith('data:image/') ? team.avatar : ''
   return (
-    <span className="flex size-8 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-primary/10 text-sm font-bold text-brand-text" aria-hidden="true">
+    <span className={`flex ${className} shrink-0 items-center justify-center overflow-hidden rounded-lg bg-primary/10 text-sm font-bold text-brand-text`} aria-hidden="true">
       {avatar && !failed
         ? <img src={avatar} alt="" className="size-full object-cover" onError={() => setFailed(true)} />
         : team.name.slice(0, 1).toUpperCase()}
@@ -149,8 +177,6 @@ function App() {
   const [selection, setSelection] = useState({}) // teamId -> { folders: [], files: [] }
   const [queue, setQueue] = useState([])
   const [queueOpen, setQueueOpen] = useState(false)
-  const [queueRunning, setQueueRunning] = useState(false)
-  const [confirmCancel, setConfirmCancel] = useState(false)
   const [browserSetup, setBrowserSetup] = useState({ phase: 'ready', message: '' })
   const [setupReadyFlash, setSetupReadyFlash] = useState(false)
   const [now, setNow] = useState(Date.now())
@@ -162,11 +188,13 @@ function App() {
   const browserWatchRef = useRef(false)
   const setupStartRef = useRef(0)
   const prevSetupPhaseRef = useRef('ready')
+  const scanStartRef = useRef(0)
   const language = preferences.language
   const t = (key, values) => translate(language, key, values)
   const countCopy = (key, count) => t(count === 1 ? `${key}One` : key, { count })
   const appearance = preferences.theme === 'system' ? (systemDark ? 'dark' : 'light') : preferences.theme
-  const rtl = language === 'fa'
+  const rtl = RTL_LANGUAGES.has(language)
+  const languageNative = LANGUAGES.find(item => item.code === language)?.native || language
   const [sortedFolders, sortedFiles] = useMemo(() => {
     const collator = new Intl.Collator(language, { sensitivity: 'base', numeric: true })
     const byName = (a, b) => collator.compare(a.name || '', b.name || '')
@@ -195,7 +223,6 @@ function App() {
 
   const teamSel = team ? (selection[team.id] || { folders: [], files: [] }) : { folders: [], files: [] }
   const selCount = teamSel.folders.length + teamSel.files.length
-  const pillVisible = view === 'browse' && selCount > 0 && !queueOpen
 
   useEffect(() => {
     const media = window.matchMedia('(prefers-color-scheme: dark)')
@@ -235,6 +262,9 @@ function App() {
       }
     })
   }, [])
+
+  /* Flying tiles target the header trigger, which only exists in app views. */
+  useEffect(() => { cancelAllFlights() }, [view])
 
   /* Esc closes the popover through Radix, or exits select mode. */
   useEffect(() => {
@@ -344,22 +374,22 @@ function App() {
   }
 
   async function chooseTeam(value) {
+    setTeam(value); setView('browse'); setFolder(null); setTrail([]); setFolders([]); setFiles([]); setSelectMode(false)
     const result = await call('folders', () => api.folders(value.id))
     if (!result) return
-    setTeam(value); setFolders(result.folders || []); setFolder(null); setTrail([]); setFiles([])
-    setSelectMode(false)
-    setView('browse')
+    setFolders(result.folders || [])
     if (result.legacy) toast.warning(t('legacyNotice'), { id: 'app-notice', duration: Infinity })
   }
 
   async function browseFolder(value, path = [...trail, value]) {
+    setFolder(value); setTrail(path); setFolders([]); setFiles([])
     const result = await call('browse', async () => {
       const children = await api.subfolders(value.id)
       const fileResult = await api.files(value.id)
       return { children, fileResult }
     })
     if (!result) return
-    setFolder(value); setTrail(path); setFolders(result.children.folders || [])
+    setFolders(result.children.folders || [])
     setFiles(result.fileResult.files || [])
     if (result.children.unavailable || result.fileResult.unavailable) toast.warning(t('folderRestricted'), { id: 'app-notice', duration: Infinity })
   }
@@ -388,7 +418,7 @@ function App() {
   function toggleFile(f) {
     updateSelection(cur => ({
       ...cur,
-      files: fileSelected(f.key) ? cur.files.filter(x => x.key !== f.key) : [...cur.files, { key: f.key, name: f.name, folder }],
+      files: fileSelected(f.key) ? cur.files.filter(x => x.key !== f.key) : [...cur.files, { key: f.key, name: f.name, folder, editorType: f.editorType }],
     }))
   }
   const visibleAllSelected = (folders.length + files.length > 0) && folders.every(f => folderSelected(f.id)) && files.every(f => fileSelected(f.key))
@@ -435,7 +465,6 @@ function App() {
   async function runQueue() {
     if (queueRunnerRef.current) return
     queueRunnerRef.current = true
-    setQueueRunning(true)
     const runId = ++runIdRef.current
     try {
       for (;;) {
@@ -448,6 +477,7 @@ function App() {
             : item.kind === 'folder'
               ? { scope: 'folder', folder: item.folder }
               : { scope: 'file', folder: item.folder, file_key: item.file_key }
+          scanStartRef.current = Date.now()
           await api.start_download({ team: item.team, ...sel })
           const s = await waitForRunEnd(runId)
           if (s.cancelled) break
@@ -457,9 +487,15 @@ function App() {
             routeToSignin()
             break
           }
+          // Caption data for the finished rows: total bytes and the on-disk path.
+          const doneFiles = s.items.filter(i => DONE_STATES.includes(i.status))
+          const runPath = item.kind === 'file' ? (doneFiles[0]?.detail || '') : (s.destination || '')
           updateQueueItem(item.id, {
             status: s.phase === 'stopped' ? 'stopped' : s.phase === 'error' || s.failed > 0 ? 'failed' : 'done',
             detail: s.phase === 'error' || s.failed > 0 ? downloadFailureDescription(s, item.name, t) : '',
+            bytes: doneFiles.reduce((sum, i) => sum + (i.size || 0), 0),
+            filesDone: doneFiles.length,
+            runPath,
           })
         } catch (err) {
           const msg = firstLine(err)
@@ -475,12 +511,10 @@ function App() {
     } finally {
       queueRunnerRef.current = false
       stopAfterCurrentRef.current = false
-      setQueueRunning(false)
     }
   }
   function enqueueItems(items, showDetails = true) {
     changeQueue(current => queueRunnerRef.current ? [...current, ...items] : items)
-    setConfirmCancel(false)
     if (showDetails) setQueueOpen(true)
     void runQueue()
   }
@@ -489,7 +523,7 @@ function App() {
     const batch = Date.now()
     const items = [
       ...teamSel.folders.map((f, i) => ({ id: `f-${batch}-${i}`, kind: 'folder', name: f.name, team, folder: f, status: 'queued', detail: '' })),
-      ...teamSel.files.map((f, i) => ({ id: `k-${batch}-${i}`, kind: 'file', name: f.name, team, folder: f.folder, file_key: f.key, status: 'queued', detail: '' })),
+      ...teamSel.files.map((f, i) => ({ id: `k-${batch}-${i}`, kind: 'file', name: f.name, team, folder: f.folder, file_key: f.key, editorType: f.editorType, status: 'queued', detail: '' })),
     ]
     clearSelection()
     enqueueItems(items)
@@ -498,13 +532,25 @@ function App() {
     updateQueueItem(id, { status: 'queued', detail: '' })
     void runQueue()
   }
-  function resumeQueue() {
-    changeQueue(q => q.map(it => ['failed', 'stopped'].includes(it.status) ? { ...it, status: 'queued', detail: '' } : it))
+  function cancelItem(id) {
+    const item = queueRef.current.find(it => it.id === id)
+    if (!item) return
+    if (item.status === 'running') { void stopCurrent(); return }
+    if (item.status !== 'done') changeQueue(q => q.filter(it => it.id !== id))
+  }
+  function continueItemNext(id) {
+    changeQueue(q => {
+      const item = q.find(it => it.id === id)
+      if (!item || item.status !== 'queued') return q
+      const rest = q.filter(it => it.id !== id)
+      const insertAt = rest.findIndex(it => it.status === 'queued')
+      if (insertAt === -1) return [...rest, item]
+      return [...rest.slice(0, insertAt), item, ...rest.slice(insertAt)]
+    })
     void runQueue()
   }
-  function cancelRemaining() {
-    changeQueue(q => q.filter(it => it.status !== 'queued'))
-    setConfirmCancel(false)
+  function clearFinished() {
+    changeQueue(q => q.filter(it => !['done', 'stopped', 'failed'].includes(it.status)))
   }
   async function stopCurrent() {
     stopAfterCurrentRef.current = true
@@ -524,33 +570,28 @@ function App() {
       team,
       folder: sel.folder,
       file_key: sel.file_key,
+      editorType: sel.editor_type,
       status: 'queued', detail: '',
     }], false)
   }
 
   const doneCount = progress.items.filter(item => DONE_STATES.includes(item.status)).length
-  const percentage = progress.total ? Math.round((doneCount / progress.total) * 100) : 0
-  const queuedCount = queue.filter(it => it.status === 'queued').length
-  const failedCount = queue.filter(it => it.status === 'failed' || it.status === 'stopped').length
-  const activeItem = queue.find(it => it.status === 'running')
-  const barTitle = progress.running
-    ? (activeItem ? `${t('progressTitle')} — ${activeItem.name}` : t('progressTitle'))
-    : progress.phase === 'stopped' ? t('barStopped')
-      : progress.total ? (progress.failed ? t('progressPartial') : t('barIdle'))
-      : t('queueTitle')
-  const barSub = progress.total
-    ? `${t(progress.total === 1 ? 'progressCountOne' : 'progressCount', { done: doneCount, total: progress.total })}${progress.message ? ' · ' + backendMsg(progress.message) : ''}`
-    : queue.length ? countCopy('itemsCount', queue.length) : ''
+  const loadingBrowse = busy === 'browse' || busy === 'folders'
+  const activeWork = queue.some(item => item.status === 'running' || item.status === 'queued')
+  const queueDoneCount = queue.filter(item => item.status === 'done').length
+  const downloadPct = queue.length ? Math.round(queueDoneCount / queue.length * 100) : 0
+  /* Live per-file stage for the running row's caption; re-renders come from the 400 ms polls. */
+  const liveFile = progress.running && progress.phase === 'downloading'
+    ? progress.items.find(item => LIVE_FILE_STATES.includes(item.status)) : null
+  const scanning = progress.running && progress.phase === 'scanning'
+  const scanSeconds = scanning && scanStartRef.current ? Math.max(0, Math.floor((Date.now() - scanStartRef.current) / 1000)) : 0
+  const scanLabel = scanSeconds ? `${Math.floor(scanSeconds / 60)}:${String(scanSeconds % 60).padStart(2, '0')}` : ''
+  const runningRows = queue.filter(item => item.status !== 'done')
+  const completedRows = queue.filter(item => item.status === 'done')
+  const clearable = completedRows.length > 0
 
   const Spinner = () => <Loader2 className="size-4 motion-safe:animate-spin" aria-hidden="true" />
 
-  /* Backend emits a few fixed English strings; surface them in the UI language */
-  function backendMsg(msg) {
-    const m = String(msg || '')
-    if (m === 'Collecting files…') return t('collectingFiles')
-    if (m === 'Download queue is ready') return t('queueReady')
-    return m
-  }
   function backendWarning(w) {
     const match = /subfolders for (\d+) folder/.exec(String(w || ''))
     return match ? t('subfolderWarning', { count: match[1] }) : w
@@ -601,7 +642,7 @@ function App() {
             {setupPending && <BrowserSetupState phase="setting_up" tone="slim" t={t} />}
             <div className="mt-2 flex flex-wrap items-center gap-3">
               <span className="me-auto text-[11px] text-muted-foreground">
-                {t('language')}: <b className="font-semibold text-foreground">{language === 'en' ? t('english') : t('persian')}</b> · <button type="button" className="font-semibold text-brand-text hover:underline" onClick={openSettings}>{t('settings')}</button>
+                {t('language')}: <b className="font-semibold text-foreground">{languageNative}</b> · <button type="button" className="font-semibold text-brand-text hover:underline" onClick={openSettings}>{t('settings')}</button>
               </span>
               <Button type="submit" disabled={!!busy}>{busy === 'token' ? <Spinner /> : null} {t('saveContinue')}</Button>
             </div>
@@ -648,126 +689,147 @@ function App() {
     </Card>
   )
 
-  /* ---------- selection pill ---------- */
-  const pill = pillVisible && (
-    <div className="fixed inset-x-4 bottom-4 z-40 mx-auto flex max-w-[560px] flex-wrap items-center justify-center gap-2.5 rounded-xl border bg-card/95 px-3 py-2 shadow-lg backdrop-blur">
-      <span className="min-w-0 text-xs font-semibold leading-tight" role="status">
-        {countCopy('itemsCount', selCount)}
-        <small className="block text-[10.5px] font-medium text-muted-foreground">{countCopy('folderCount', teamSel.folders.length)} · {countCopy('fileCount', teamSel.files.length)}</small>
+  /* ---------- download manager popover ---------- */
+  const rowBtn = 'grid size-7 flex-none place-items-center rounded-md text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring'
+  const rowCaption = (item) => {
+    if (item.status === 'queued') return <span>{t('captionQueue')}</span>
+    if (item.status === 'running') {
+      if (stopAfterCurrentRef.current) return <span>{t('stopping')}</span>
+      if (scanning) {
+        return <span>{t('collectingFiles')}{scanLabel && <span aria-hidden="true" className="tabular-nums"> · {scanLabel}</span>}</span>
+      }
+      if (liveFile) {
+        const count = item.kind !== 'file' && progress.total > 0
+          ? <> · {t(progress.total === 1 ? 'progressCountOne' : 'progressCount', { done: doneCount, total: progress.total })}</>
+          : null
+        return <span>{t(STEP_KEY[liveFile.status])}{count}</span>
+      }
+      return <span>{setupPending ? t('setupWaiting') : t('running')}</span>
+    }
+    if (item.status === 'stopped') return <span>{item.detail || t('statusStopped')}</span>
+    if (item.status === 'failed') return <span className="text-destructive">{item.detail || t('statusFailed')}</span>
+    if (item.kind === 'file') return <span>{fmtBytes(item.bytes) || t('statusSaved')}</span>
+    return <span>{countCopy('filesCount', item.filesDone || 0)}</span>
+  }
+  const rowActions = (item) => {
+    if (item.status === 'running') {
+      return (
+        <span className="relative flex size-7 flex-none items-center justify-center">
+          <Loader2 className="size-3.5 text-muted-foreground motion-safe:animate-spin group-hover:opacity-0" aria-hidden="true" />
+          <button type="button" onClick={() => cancelItem(item.id)} aria-label={t('cancelItem')} title={t('cancelItem')}
+            className="absolute inset-0 hidden place-items-center rounded-md text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring group-hover:grid group-focus-within:grid">
+            <X className="size-3.5" aria-hidden="true" />
+          </button>
+        </span>
+      )
+    }
+    if (item.status === 'queued') {
+      return (
+        <span className="hidden flex-none items-center gap-0.5 group-hover:flex group-focus-within:flex">
+          <button type="button" onClick={() => cancelItem(item.id)} aria-label={t('cancelItem')} title={t('cancelItem')} className={rowBtn}>
+            <X className="size-3.5" aria-hidden="true" />
+          </button>
+          <button type="button" onClick={() => continueItemNext(item.id)} aria-label={t('continueNow')} title={t('continueNow')} className={rowBtn}>
+            <Play className="size-3.5" aria-hidden="true" />
+          </button>
+        </span>
+      )
+    }
+    if (item.status === 'done' && item.runPath) {
+      return (
+        <button type="button" onClick={() => api.open_path(item.runPath)} aria-label={t('showInFolder')} title={t('showInFolder')} className={rowBtn + ' hidden group-hover:grid group-focus-within:grid'}>
+          <FolderInput className="size-3.5" aria-hidden="true" />
+        </button>
+      )
+    }
+    if (item.status === 'failed' || item.status === 'stopped') {
+      return (
+        <span className="flex flex-none items-center gap-0.5">
+          <button type="button" onClick={() => cancelItem(item.id)} aria-label={t('cancelItem')} title={t('cancelItem')} className={rowBtn}>
+            <X className="size-3.5" aria-hidden="true" />
+          </button>
+          <button type="button" onClick={() => retryItem(item.id)} aria-label={t('retry')} title={t('retry')} className={rowBtn}>
+            <RefreshCw className="size-3.5" aria-hidden="true" />
+          </button>
+        </span>
+      )
+    }
+    return null
+  }
+  const downloadRow = (item) => (
+    <div key={item.id} className="group mx-2 flex min-h-11 items-center gap-3 rounded-[6px] px-2 transition-colors duration-150 hover:bg-muted">
+      {item.kind === 'file'
+        ? <FileIcon editorType={item.editorType} className="size-7 shrink-0" />
+        : item.kind === 'folder'
+          ? (
+            <span aria-hidden="true" className="grid size-7 flex-none place-items-center rounded-md bg-muted text-muted-foreground">
+              <Folder className="size-4" />
+            </span>
+          )
+          : <TeamAvatar team={item.team} className="size-7 shrink-0" />}
+      <span className="min-w-0 flex-1">
+        <span className="block break-words text-xs font-medium leading-4 [overflow-wrap:anywhere]"><bdi>{item.name}</bdi></span>
+        <span dir="auto" className="mt-1 block break-words text-xs leading-4 text-muted-foreground [overflow-wrap:anywhere]">{rowCaption(item)}</span>
       </span>
-      <Button size="sm" onClick={startSelectionBackup} disabled={!!busy}>
-        {busy === 'download' ? <Spinner /> : <Download className="size-3.5" />}
-        {queue.some(item => item.status === 'running' || item.status === 'queued') ? t('addToQueue') : countCopy('backUpItems', selCount)}
-      </Button>
-      <button aria-label={t('clearSelection')} onClick={clearSelection} className="grid size-8 place-items-center rounded-full text-muted-foreground hover:bg-accent focus-visible:outline-2 focus-visible:outline-ring">
-        <X className="size-3.5" />
-      </button>
+      {rowActions(item)}
     </div>
   )
-
-  /* ---------- download manager popover ---------- */
   const downloadManager = (
-    <div className="flex min-h-0 flex-col">
-      <div className="flex items-center gap-2 border-b px-4 py-3">
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="flex shrink-0 items-center gap-1.5 ps-4 pe-2 py-1.5">
         <h2 className="min-w-0 flex-1 text-sm font-semibold">{t('downloadManagerTitle')}</h2>
-        <span className="text-xs tabular-nums text-muted-foreground">{countCopy('itemsCount', queue.length)}</span>
-        <button type="button" aria-label={t('close')} onClick={() => setQueueOpen(false)} className="grid size-7 flex-none place-items-center rounded-md text-muted-foreground hover:bg-accent focus-visible:outline-2 focus-visible:outline-ring">
-          <X className="size-3.5" aria-hidden="true" />
+        {clearable && (
+          <Button variant="ghost" size="sm" onClick={clearFinished} title={t('clearFinishedTitle')}>
+            {t('clearFinished')}
+          </Button>
+        )}
+        <button type="button" aria-label={t('close')} onClick={() => setQueueOpen(false)} className="grid size-8 flex-none place-items-center rounded-md text-muted-foreground hover:bg-accent focus-visible:outline-2 focus-visible:outline-ring">
+          <X className="size-4" aria-hidden="true" />
         </button>
       </div>
-      {(progress.running || progress.total > 0 || queue.length > 0 || setupBlocked) && (
-        <div role="status" className="flex items-center gap-3 border-b px-4 py-3">
-          {setupReadyFlash ? (
-            <span className="grid size-9 flex-none place-items-center rounded-full bg-success/15 text-success">
-              <CheckCircle2 className="size-5" aria-hidden="true" />
-            </span>
-          ) : setupPending ? (
-            <span aria-hidden="true" className="grid size-9 flex-none place-items-center rounded-full bg-primary/10">
-              <Loader2 className="size-4 text-brand-text motion-safe:animate-spin" />
-            </span>
-          ) : (
-            <Ring value={percentage} label={percentage} name={t('progressTitle')} />
-          )}
-          <span className="min-w-0 flex-1">
-            <span className="block truncate text-xs font-bold">
-              {setupReadyFlash ? t('setupReady') : setupFailed ? t('setupFailed') : setupPending ? t('setupHeading') : barTitle}
-            </span>
-            <span className="block truncate text-[10.5px] text-muted-foreground">
-              {setupReadyFlash ? t('setupBadge')
-                : setupFailed ? (browserSetup.message || t('queueBlockedDetail'))
-                : setupPending ? (setupEscalated ? t('setupEscalated') : t('setupBody'))
-                : barSub}
-            </span>
-          </span>
-          {setupFailed && (
-            <Button variant="outline" size="sm" onClick={retryBrowserSetup} className="flex-none">
-              {busy === 'browser-setup' ? <Spinner /> : <RotateCcw className="size-3" />} {t('setupRetry')}
-            </Button>
-          )}
+      {setupReadyFlash && (
+        <div role="status" className="flex items-center gap-2 px-4 py-2 text-xs font-medium text-success">
+          <CheckCircle2 className="size-3.5" aria-hidden="true" /> {t('setupReady')}
         </div>
       )}
-      {progress.destination && queue.length > 0 && (
-        <p dir="ltr" title={progress.destination} className="truncate border-b bg-muted/40 px-4 py-2 text-xs text-muted-foreground">{t('destination', { path: progress.destination + '/' })}</p>
+      {setupPending && (
+        <div className="px-4 py-2">
+          <BrowserSetupState phase="setting_up" tone="slim" t={t} />
+        </div>
       )}
-      <div className="max-h-[min(320px,50vh)] divide-y overflow-y-auto">
-            {queue.map(item => (
-              <div key={item.id} className="flex flex-wrap items-center gap-2.5 px-4 py-2.5">
-                <span className={'grid size-[22px] flex-none place-items-center rounded-full ' + (
-                  item.status === 'done' ? 'bg-success/15 text-success'
-                    : item.status === 'running' ? 'bg-primary/15 text-brand-text'
-                    : item.status === 'failed' ? 'bg-destructive/15 text-destructive'
-                    : 'bg-muted text-muted-foreground'
-                )}>
-                  {item.status === 'done' ? <CheckCircle2 className="size-3" />
-                    : item.status === 'running' ? <Loader2 className="size-3 motion-safe:animate-spin" />
-                    : item.status === 'failed' ? <AlertTriangle className="size-3" />
-                    : item.status === 'stopped' ? <Square className="size-3" />
-                    : <Clock className="size-3" />}
-                </span>
-                <span aria-hidden="true" className={'flex-none rounded-full px-2 py-0.5 text-[10px] font-semibold ' + (item.kind !== 'file' ? 'bg-primary/15 text-brand-text' : 'bg-muted text-muted-foreground')}>
-                  {item.kind === 'team' ? t('kindTeam') : item.kind === 'folder' ? t('kindFolder') : t('kindFile')}
-                </span>
-                <span className="min-w-28 flex-1 break-words [overflow-wrap:anywhere]">
-                  <span className="block text-sm font-medium leading-snug"><bdi>{item.name}</bdi></span>
-                  {item.detail && <span dir="auto" className="mt-0.5 block whitespace-pre-line break-words text-xs leading-snug text-muted-foreground [overflow-wrap:anywhere]">{item.detail}</span>}
-                </span>
-                {(item.status === 'failed' || item.status === 'stopped') && (
-                  <Button variant="outline" size="sm" onClick={() => retryItem(item.id)}><RotateCcw className="size-3" /> {t('retry')}</Button>
-                )}
-                <span className={'flex-none text-end text-xs font-semibold ' + (item.status === 'done' ? 'text-success' : item.status === 'failed' ? 'text-destructive' : item.status === 'running' ? 'text-brand-text' : 'text-muted-foreground')}>
-                  {item.status === 'done' ? t('statusSaved')
-                    : item.status === 'running' ? (setupPending ? t('setupWaiting') : t('running'))
-                    : item.status === 'failed' ? t('statusFailed')
-                    : item.status === 'stopped' ? t('statusStopped')
-                    : t('statusQueued')}
-                </span>
-              </div>
-            ))}
-            {!queue.length && (
-              <div className="px-4 py-8 text-center text-sm text-muted-foreground">
-                <Download className="mx-auto mb-2 size-5 opacity-60" aria-hidden="true" />
-                {t('downloadManagerEmpty')}
-              </div>
-            )}
-      </div>
-      <div className="flex flex-wrap items-center gap-2 border-t px-3 py-2.5">
-            {(failedCount > 0 || queuedCount > 0) && !queueRunning && (
-              <Button variant="outline" size="sm" onClick={resumeQueue}><RotateCcw className="size-3" /> {t(failedCount > 0 ? 'resumeQueue' : 'continueQueue')}</Button>
-            )}
-            {queuedCount > 0 && (
-              <div className="flex flex-wrap items-center gap-2">
-                <Button variant={confirmCancel ? 'destructive' : 'ghost'} size="sm" onClick={confirmCancel ? cancelRemaining : () => setConfirmCancel(true)}>
-                  <X className="size-3" /> {confirmCancel ? countCopy('confirmCancelRemaining', queuedCount) : `${t('cancelRemaining')} (${queuedCount})`}
-                </Button>
-                {confirmCancel && <Button variant="ghost" size="sm" onClick={() => setConfirmCancel(false)}>{t('keepQueued')}</Button>}
-              </div>
-            )}
-            <span className="flex-1" />
-            {progress.running && (
-              <Button variant="outline" size="sm" onClick={stopCurrent}><Square className="size-3" /> {t('stop')}</Button>
-            )}
-        <Button variant="ghost" size="sm" onClick={() => api.open_downloads()}><ExternalLink className="size-3.5" /> {t('openDownloads')}</Button>
-        {queue.length > 0 && <Button size="sm" onClick={() => api.open_destination()}><ExternalLink className="size-3.5" /> {t('openDestination')}</Button>}
+      {setupFailed && (
+        <div className="px-4 py-2">
+          <BrowserSetupState phase="failed" message={browserSetup.message} t={t} />
+          <Button variant="outline" size="sm" onClick={retryBrowserSetup} className="mt-2 w-full">
+            {busy === 'browser-setup' ? <Spinner /> : <RotateCcw className="size-3" />} {t('setupRetry')}
+          </Button>
+        </div>
+      )}
+      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+        {runningRows.length > 0 && (
+          <section>
+            <div className="flex items-center justify-between border-y border-border bg-muted px-4 py-1.5">
+              <h3 className="text-xs font-medium text-muted-foreground">{t('sectionInProgress')}</h3>
+              <span aria-hidden="true" className="text-xs tabular-nums text-muted-foreground">{runningRows.length}</span>
+            </div>
+            <div className="py-1">{runningRows.map(downloadRow)}</div>
+          </section>
+        )}
+        {completedRows.length > 0 && (
+          <section>
+            <div className="flex items-center justify-between border-y border-border bg-muted px-4 py-1.5">
+              <h3 className="text-xs font-medium text-muted-foreground">{t('sectionCompleted')}</h3>
+              <span aria-hidden="true" className="text-xs tabular-nums text-muted-foreground">{completedRows.length}</span>
+            </div>
+            <div className="py-1">{completedRows.map(downloadRow)}</div>
+          </section>
+        )}
+        {!queue.length && (
+          <div className="flex flex-1 flex-col items-center justify-center px-4 text-center text-sm text-muted-foreground">
+            <Download className="mb-2 size-5 opacity-60" aria-hidden="true" />
+            {t('downloadManagerEmpty')}
+          </div>
+        )}
       </div>
     </div>
   )
@@ -788,7 +850,7 @@ function App() {
             <WindowControls maximized={maximized} t={t} />
           </div>
         )}
-        <div className="pywebview-drag-region app-header-inner mx-auto flex h-12 w-full max-w-[680px] items-center gap-2.5 px-4">
+        <div className="pywebview-drag-region app-header-inner mx-auto flex h-12 w-full max-w-[680px] items-center gap-2.5 ps-4 pe-2">
           {view === 'settings' ? (
             <div className="flex min-w-0 items-center gap-1">
               <Button variant="ghost" size="icon-lg" aria-label={t('back')} title={t('back')} onClick={leaveSettings}>
@@ -801,12 +863,17 @@ function App() {
             {view !== 'wizard' && view !== 'settings' && (
               <PopoverPrimitive.Root open={queueOpen} onOpenChange={setQueueOpen}>
                 <PopoverPrimitive.Trigger asChild>
-                  <Button variant="ghost" size="icon" aria-label={t('downloadManagerTitle')} title={t('downloadManagerTitle')} aria-expanded={queueOpen} aria-controls="download-manager">
+                  <Button variant="ghost" size="icon" data-download-trigger="" aria-label={t('downloadManagerTitle')} title={t('downloadManagerTitle')} aria-expanded={queueOpen} aria-controls="download-manager" className="relative">
                     <Download className="size-4" aria-hidden="true" />
+                    {activeWork && (
+                      <span aria-hidden="true" className="dl-progress absolute inset-x-1 bottom-px h-[3px] overflow-hidden rounded-full bg-muted">
+                        <span className="block h-full rounded-full bg-primary transition-[width] duration-300" style={{ width: `${downloadPct}%` }} />
+                      </span>
+                    )}
                   </Button>
                 </PopoverPrimitive.Trigger>
                 <PopoverPrimitive.Portal>
-                  <PopoverPrimitive.Content id="download-manager" aria-label={t('downloadManagerTitle')} side="bottom" align="end" sideOffset={8} collisionPadding={8} className="z-50 w-[min(420px,calc(100vw-24px))] overflow-hidden rounded-xl border bg-popover text-popover-foreground shadow-xl outline-none">
+                  <PopoverPrimitive.Content id="download-manager" aria-label={t('downloadManagerTitle')} side="bottom" align="end" sideOffset={8} collisionPadding={8} onOpenAutoFocus={event => event.preventDefault()} className="z-50 flex max-h-[min(800px,var(--radix-popover-content-available-height))] min-h-[400px] w-[min(375px,calc(100vw-24px))] flex-col overflow-hidden rounded-xl border bg-popover text-popover-foreground shadow-xl outline-none">
                     {downloadManager}
                   </PopoverPrimitive.Content>
                 </PopoverPrimitive.Portal>
@@ -821,7 +888,7 @@ function App() {
         </div>
       </header>
 
-      <main id="main" className={'mx-auto w-full max-w-[680px] flex-1 ' + (view === 'wizard' ? 'px-4 pt-7 pb-10' : 'px-2 pt-4 ' + (pillVisible ? 'pb-28' : 'pb-8'))}>
+      <main id="main" className={'mx-auto w-full max-w-[680px] flex-1 ' + (view === 'wizard' ? 'px-4 pt-7 pb-10' : 'px-2 pt-4 pb-8')}>
         {error && (
           <div role="alert" className="mb-4 flex items-start gap-2.5 rounded-lg border border-[var(--figma-color-border-danger)] bg-[var(--figma-color-bg-danger-tertiary)] px-3.5 py-2.5 text-sm text-destructive">
             <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
@@ -851,7 +918,10 @@ function App() {
                   </Button>
                 )}
                 {view === 'browse' && !inSelect && (
-                  <Button size="sm" onClick={() => startDownload(folder ? { scope: 'folder', folder } : { scope: 'team' })} disabled={!!busy}>
+                  <Button size="sm" onClick={event => {
+                    flyToQueue(event.currentTarget.querySelector('svg'), { endScale: 0.8, describe: n => n === 1 ? t('queuedOne', { name: folder?.name || team?.name }) : t('queuedMany', { count: n }) })
+                    startDownload(folder ? { scope: 'folder', folder } : { scope: 'team' })
+                  }} disabled={!!busy}>
                     <Download className="size-3.5" /> {folder ? t('folderBackup') : t('teamBackup')}
                   </Button>
                 )}
@@ -884,8 +954,9 @@ function App() {
                 <Select dir={rtl ? 'rtl' : 'ltr'} value={language} onValueChange={async value => { if (await savePrefs({ language: value })) toast.success(translate(value, 'savedNotice'), { id: 'app-notice' }) }}>
                   <SelectTrigger id="setting-language" className="w-40 max-w-full"><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="en">English</SelectItem>
-                    <SelectItem value="fa">فارسی</SelectItem>
+                    {LANGUAGES.map(item => (
+                      <SelectItem key={item.code} value={item.code}>{item.native}</SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
               </div>
@@ -958,7 +1029,9 @@ function App() {
                 </div>
               )}
               <div>
-                {teams.map(value => (
+                {busy === 'teams' ? (
+                  <SkeletonRows count={3} label={t('loading')} />
+                ) : teams.map(value => (
                   <button key={value.id} className="flex w-full items-center gap-3 rounded-md px-3 py-2.5 text-start transition-colors hover:bg-accent/60 disabled:opacity-50" onClick={() => chooseTeam(value)} disabled={!!busy}>
                     <TeamAvatar team={value} />
                     <span className="min-w-0 flex-1 break-words text-sm font-medium leading-snug [overflow-wrap:anywhere]"><bdi>{value.name}</bdi></span>
@@ -969,7 +1042,7 @@ function App() {
               {!teams.length && setupPending && (
                 <div role="status" className="px-3 py-8 text-center text-sm text-muted-foreground">{t('teamsPending')}</div>
               )}
-              {!teams.length && !setupBlocked && (
+              {!teams.length && !setupBlocked && busy !== 'teams' && (
                 <div className="px-3 py-8 text-center text-sm text-muted-foreground">{t('noTeams')}</div>
               )}
             </div>
@@ -977,8 +1050,9 @@ function App() {
 
           {view === 'browse' && (
             <div className="w-full">
-              <div>
-                {sortedFolders.map(value => inSelect ? (
+            <div>
+              {loadingBrowse && <SkeletonRows count={7} label={t('loading')} />}
+              {sortedFolders.map(value => inSelect ? (
                   <div key={value.id} className={'flex flex-wrap items-center gap-3 rounded-md px-3 py-2.5 ' + (folderSelected(value.id) ? 'bg-primary/5' : '')}>
                     <Checkbox checked={folderSelected(value.id)} onCheckedChange={() => toggleFolder(value)} aria-label={t('ariaSelectItem', { name: value.name })} className="shrink-0" />
                     <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground"><Folder className="size-4" /></span>
@@ -988,13 +1062,13 @@ function App() {
                     </button>
                   </div>
                 ) : (
-                  <div key={value.id} className="flex flex-wrap items-center gap-3 rounded-md px-3 py-2.5 transition-colors hover:bg-accent/60">
+                  <div key={value.id} data-download-row="" className="flex flex-wrap items-center gap-3 rounded-md px-3 py-2.5 transition-colors hover:bg-accent/60">
                     <button className="flex min-w-0 flex-1 items-center gap-3 text-start" onClick={() => browseFolder(value)} disabled={!!busy} aria-label={t('ariaOpen', { name: value.name })}>
-                      <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground"><Folder className="size-4" /></span>
+                      <span data-row-tile="" className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground"><Folder className="size-4" /></span>
                       <span className="min-w-0 flex-1 break-words text-sm font-medium leading-snug [overflow-wrap:anywhere]"><bdi>{value.name}</bdi></span>
                     </button>
                     <div className="flex shrink-0 items-center gap-3">
-                      <Button variant="ghost" size="icon-sm" onClick={() => startDownload({ scope: 'folder', folder: value })} disabled={!!busy} aria-label={t('ariaBackupItem', { name: value.name })} title={t('ariaBackupItem', { name: value.name })}>
+                      <Button variant="ghost" size="icon-sm" onClick={event => { flyToQueue(event.currentTarget.closest('[data-download-row]')?.querySelector('[data-row-tile]'), { describe: n => n === 1 ? t('queuedOne', { name: value.name }) : t('queuedMany', { count: n }) }); startDownload({ scope: 'folder', folder: value }) }} disabled={!!busy} aria-label={t('ariaBackupItem', { name: value.name })} title={t('ariaBackupItem', { name: value.name })}>
                         <Download className="size-4" aria-hidden="true" />
                       </Button>
                       <Button variant="ghost" size="icon-sm" onClick={() => browseFolder(value)} disabled={!!busy} aria-label={t('ariaOpen', { name: value.name })} title={t('ariaOpen', { name: value.name })}>
@@ -1006,20 +1080,20 @@ function App() {
                 {sortedFiles.map(value => inSelect ? (
                   <div key={value.key} className={'flex flex-wrap items-center gap-3 rounded-md px-3 py-2.5 ' + (fileSelected(value.key) ? 'bg-primary/5' : '')}>
                     <Checkbox checked={fileSelected(value.key)} onCheckedChange={() => toggleFile(value)} aria-label={t('ariaSelectItem', { name: value.name })} className="shrink-0" />
-                    <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-brand-text"><PenTool className="size-4" /></span>
+                    <FileIcon editorType={value.editorType} />
                     <span className="min-w-28 flex-1 break-words text-sm font-medium leading-snug [overflow-wrap:anywhere]"><bdi>{value.name}</bdi></span>
                   </div>
                 ) : (
-                  <div key={value.key} className="flex flex-wrap items-center gap-3 rounded-md px-3 py-2.5 transition-colors hover:bg-accent/60">
-                    <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-brand-text"><PenTool className="size-4" /></span>
+                  <div key={value.key} data-download-row="" className="flex flex-wrap items-center gap-3 rounded-md px-3 py-2.5 transition-colors hover:bg-accent/60">
+                    <FileIcon editorType={value.editorType} data-row-tile="" />
                     <span className="min-w-28 flex-1 break-words text-sm font-medium leading-snug [overflow-wrap:anywhere]"><bdi>{value.name}</bdi></span>
-                    <Button variant="outline" size="sm" onClick={() => startDownload({ scope: 'file', folder, file_key: value.key, name: value.name })} disabled={!!busy} aria-label={t('ariaDownloadItem', { name: value.name })}>
+                    <Button variant="outline" size="sm" onClick={event => { flyToQueue(event.currentTarget.closest('[data-download-row]')?.querySelector('[data-row-tile]'), { describe: n => n === 1 ? t('queuedOne', { name: value.name }) : t('queuedMany', { count: n }) }); startDownload({ scope: 'file', folder, file_key: value.key, name: value.name, editor_type: value.editorType }) }} disabled={!!busy} aria-label={t('ariaDownloadItem', { name: value.name })}>
                       {busy === 'download' ? <Spinner /> : <Download className="size-3.5" />} {t('downloadFile')}
                     </Button>
                   </div>
                 ))}
               </div>
-              {!folders.length && !files.length && <div className="px-3 py-8 text-center text-sm leading-relaxed text-muted-foreground text-pretty">{t(folder ? 'emptyFolder' : 'emptyTeam')}</div>}
+              {!loadingBrowse && !folders.length && !files.length && <div className="px-3 py-8 text-center text-sm leading-relaxed text-muted-foreground text-pretty">{t(folder ? 'emptyFolder' : 'emptyTeam')}</div>}
             </div>
           )}
         </>
@@ -1037,8 +1111,6 @@ function App() {
           ))}
         </div>
       )}
-
-      {pill}
     </div>
   )
 }
