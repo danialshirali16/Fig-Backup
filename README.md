@@ -117,41 +117,6 @@ connected to Figma**. It relies on the Figma web editor's interface, which may c
 and require app updates. Only use Fig Backup with files you are authorized to access, and keep
 backups of anything important — this tool is provided as is, without warranty.
 
-## Development
-
-```sh
-python3 -m venv .venv
-.venv/bin/python -m pip install -r requirements.txt
-npm install
-npm run build
-.venv/bin/python -m playwright install chromium
-.venv/bin/python -m unittest discover -s tests
-.venv/bin/python -m figma_backup.app
-```
-
-Python 3.9+ is required. Node.js 22+ is needed only to build the interface — `dist/` ships
-prebuilt, so Node is only needed after UI changes.
-
-- Alternatively, double-click `Fig Backup.command`; it creates a Python environment, installs
-  missing dependencies, and launches the desktop app.
-- **UI review in a browser**: run `npm run dev` and open
-  [http://127.0.0.1:5173/?preview=1](http://127.0.0.1:5173/?preview=1) — a development-only view
-  with sample teams and folders. It never connects to Figma or starts real backups.
-- **Packaging**: `./build-mac.sh` builds an Apple Silicon app into `release/` (regenerates
-  `app-icon.icns` from `app-icon-macos.png`). `./build-windows.sh` (from Git Bash; Node 22+,
-  Python 3.11+) builds `release/Fig Backup/Fig Backup.exe`. No account credentials are bundled
-  into the app. Public releases need code-signing and notarization to avoid Gatekeeper warnings.
-
-## Documentation
-
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — backend/frontend split, bridge API, storage
-  layout, backup-queue semantics.
-- [docs/UI.md](docs/UI.md) — screens and flows, selection model, design system (tokens,
-  components), i18n and accessibility.
-- [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) — Gatekeeper, sign-in issues, the one-time
-  browser install, HTTP 451, and other common problems.
-- [SECURITY.md](SECURITY.md) — how to report vulnerabilities privately.
-
 ## Contributing
 
 Bug reports, fixes, and features are welcome — see
