@@ -43,6 +43,18 @@ npm run build
 - Windows: `./build-windows.sh` from Git Bash (Node 22+, Python 3.11+) →
   `release/Fig Backup/Fig Backup.exe`. CI builds this on every push to the `windows-build` branch.
 
+## Releases
+
+Releases are tagged `vX.Y.Z` on `main` and published through GitHub Releases with the macOS and
+Windows zips plus a `SHA256SUMS.txt`. Copy `.github/RELEASE_NOTES_TEMPLATE.md` for the notes;
+the "Generate release notes" button is configured via `.github/release.yml`.
+
+## Working with AI coding agents
+
+If you use AI agents in this repo, point them at [.agents/AGENTS.md](.agents/AGENTS.md) — it
+collects the project's ground rules (history policy, commit identity, i18n and `dist/`
+conventions, and the UI preview/screenshot harness gotchas).
+
 ## Reporting bugs
 
 Please include:

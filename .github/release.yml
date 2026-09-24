@@ -1,0 +1,19 @@
+# Categories used by GitHub's "Generate release notes" button on releases.
+changelog:
+  exclude:
+    authors:
+      - dependabot
+  categories:
+    - title: New features
+      labels:
+        - enhancement
+        - feature
+    - title: Bug fixes
+      labels:
+        - bug
+        - fix
+    - title: Documentation
+      labels:
+        - documentation
+    - title: Other changes
+      labels: []

@@ -1,0 +1,59 @@
+name: Bug report
+description: Something in Fig Backup doesn't work as expected
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug.
+        **Never paste your Figma access token anywhere in this issue.**
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Describe the problem, including any error text shown in the setup wizard or download manager.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open…
+        2. Click…
+        3. See error
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - macOS (Apple Silicon)
+        - Windows 10/11 (x64)
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: App version
+      description: The release tag you downloaded (e.g. v0.2.0), or "built from source".
+    validations:
+      required: true
+  - type: textarea
+    id: attachments
+    attributes:
+      label: Screenshots or debug attachments
+      description: >
+        If a backup failed mid-run, the app saved a debugging screenshot of the browser to
+        `~/Library/Application Support/Fig Backup/` — attach it (redacted as needed).
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: >
+            I checked the [Troubleshooting guide](https://github.com/danialshirali16/Fig-Backup/blob/main/docs/TROUBLESHOOTING.md) and this isn't covered there.
+          required: true
+        - label: I have not included my Figma access token or other personal secrets.
+          required: true

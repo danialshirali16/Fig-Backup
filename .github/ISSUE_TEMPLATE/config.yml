@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Troubleshooting guide
+    url: https://github.com/danialshirali16/Fig-Backup/blob/main/docs/TROUBLESHOOTING.md
+    about: Common problems (Gatekeeper, sign-in, the one-time browser install, HTTP 451) and their fixes.
