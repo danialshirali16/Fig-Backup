@@ -147,7 +147,12 @@ export const es = {
   winMinimize: 'Minimizar',
   winMaximize: 'Maximizar',
   winRestore: 'Restaurar',
-}
+
+  donateTitle: 'Donar',
+  donateDescription: 'Si Fig Backup te ahorra tiempo, apoya su desarrollo con Bitcoin.',
+  copyAddress: 'Copiar dirección de Bitcoin',
+  addressCopied: 'Dirección de Bitcoin copiada.',
+  copyFailed: 'No se pudo copiar. Selecciona la dirección manualmente.',}
 
 export const es419 = {
   settings: 'Configuración',
@@ -295,7 +300,12 @@ export const es419 = {
   winMinimize: 'Minimizar',
   winMaximize: 'Maximizar',
   winRestore: 'Restaurar',
-}
+
+  donateTitle: 'Donar',
+  donateDescription: 'Si Fig Backup te ahorra tiempo, apoya su desarrollo con Bitcoin.',
+  copyAddress: 'Copiar dirección de Bitcoin',
+  addressCopied: 'Dirección de Bitcoin copiada.',
+  copyFailed: 'No se pudo copiar. Selecciona la dirección manualmente.',}
 
 export const ko = {
   settings: '설정',
@@ -443,7 +453,12 @@ export const ko = {
   winMinimize: '최소화',
   winMaximize: '최대화',
   winRestore: '원래 크기로',
-}
+
+  donateTitle: '후원',
+  donateDescription: 'Fig Backup가 도움이 된다면 Bitcoin으로 개발을 후원해 주세요.',
+  copyAddress: 'Bitcoin 주소 복사',
+  addressCopied: 'Bitcoin 주소가 복사되었습니다.',
+  copyFailed: '복사할 수 없습니다. 주소를 직접 선택하세요.',}
 
 export const ptBR = {
   settings: 'Configurações',
@@ -591,4 +606,9 @@ export const ptBR = {
   winMinimize: 'Minimizar',
   winMaximize: 'Maximizar',
   winRestore: 'Restaurar',
-}
+
+  donateTitle: 'Doar',
+  donateDescription: 'Se o Fig Backup economiza seu tempo, apoie o desenvolvimento com Bitcoin.',
+  copyAddress: 'Copiar endereço de Bitcoin',
+  addressCopied: 'Endereço de Bitcoin copiado.',
+  copyFailed: 'Não foi possível copiar. Selecione o endereço manualmente.',}

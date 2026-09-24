@@ -148,7 +148,12 @@ export const ja = {
   winMinimize: '最小化',
   winMaximize: '最大化',
   winRestore: '元に戻す',
-}
+
+  donateTitle: '寄付',
+  donateDescription: 'Fig Backup が役に立つなら、Bitcoin で開発を支援してください。',
+  copyAddress: 'Bitcoin アドレスをコピー',
+  addressCopied: 'Bitcoin アドレスをコピーしました。',
+  copyFailed: 'コピーできませんでした。アドレスを手動で選択してください。',}
 
 export const fr = {
   settings: 'Paramètres',
@@ -296,7 +301,12 @@ export const fr = {
   winMinimize: 'Réduire',
   winMaximize: 'Agrandir',
   winRestore: 'Restaurer',
-}
+
+  donateTitle: 'Faire un don',
+  donateDescription: 'Si Fig Backup vous fait gagner du temps, soutenez son développement en Bitcoin.',
+  copyAddress: "Copier l'adresse Bitcoin",
+  addressCopied: 'Adresse Bitcoin copiée.',
+  copyFailed: "Impossible de copier. Sélectionnez l'adresse manuellement.",}
 
 export const de = {
   settings: 'Einstellungen',
@@ -444,4 +454,9 @@ export const de = {
   winMinimize: 'Minimieren',
   winMaximize: 'Maximieren',
   winRestore: 'Wiederherstellen',
-}
+
+  donateTitle: 'Spenden',
+  donateDescription: 'Wenn Fig Backup Ihnen Zeit spart, unterstützen Sie die Entwicklung mit Bitcoin.',
+  copyAddress: 'Bitcoin-Adresse kopieren',
+  addressCopied: 'Bitcoin-Adresse kopiert.',
+  copyFailed: 'Kopieren nicht möglich. Adresse bitte manuell auswählen.',}

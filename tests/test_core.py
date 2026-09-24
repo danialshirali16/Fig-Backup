@@ -67,6 +67,21 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(ArchiveIndex(root, downloads).target({'key': 'a', 'name': 'Renamed'})[0], p1)
             self.assertEqual(json.loads((root / 'downloads.json').read_text())['files']['b'], 'Same(1).fig')
 
+    def test_native_single_file_paths_survive_restart(self):
+        for editor_type, extension in (('figjam', '.jam'), ('slides', '.deck')):
+            with self.subTest(editor_type=editor_type), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                downloads = root / 'Downloads'
+                downloads.mkdir()
+                file = {'key': 'original', 'name': 'Same', 'editorType': editor_type}
+                first, _ = ArchiveIndex(root, downloads).target(file)
+                first.write_bytes(b'x' * 2048)
+
+                restarted = ArchiveIndex(root, downloads)
+                self.assertEqual(restarted.target(file)[0], first)
+                other, _ = restarted.target({**file, 'key': 'other'})
+                self.assertEqual(other.name, f'Same(1){extension}')
+
     def test_tree_archive_keeps_folders_and_collision_names(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -87,6 +102,23 @@ class CoreTests(unittest.TestCase):
             self.assertTrue((downloads / 'Fig Backup/Team/Folder/Child').is_dir())
             again = TreeArchiveIndex(team, store, downloads)
             self.assertEqual(again.target({'key': 'a', 'name': 'Renamed', '_folder_path': [first]})[0], p1)
+
+    def test_native_tree_file_paths_survive_restart(self):
+        for editor_type, extension in (('figjam', '.jam'), ('slides', '.deck')):
+            with self.subTest(editor_type=editor_type), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                downloads = root / 'Downloads'
+                support = root / 'Support'
+                team = {'id': '10', 'name': 'Team'}
+                folder = {'id': '20', 'name': 'Folder'}
+                file = {'key': 'original', 'name': 'Same', 'editorType': editor_type, '_folder_path': [folder]}
+                first, _ = TreeArchiveIndex(team, support, downloads).target(file)
+                first.write_bytes(b'x' * 2048)
+
+                restarted = TreeArchiveIndex(team, support, downloads)
+                self.assertEqual(restarted.target(file)[0], first)
+                other, _ = restarted.target({**file, 'key': 'other'})
+                self.assertEqual(other.name, f'Same(1){extension}')
 
     def test_legacy_fallback_and_451_subfolders(self):
         paths = []

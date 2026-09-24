@@ -19,10 +19,12 @@ import { translate, LANGUAGES, RTL_LANGUAGES } from './i18n'
 import { downloadFailureDescription } from './download-errors'
 import { flyToQueue, cancelAllFlights } from './fly-to-queue'
 import iconFileDesign from './assets/figma-file-design.png'
+import donateQr from './assets/donate-qr.png'
 import iconFileSlides from './assets/figma-file-slides.png'
 import iconFileFigjam from './assets/figma-file-figjam.png'
 
 const DONE_STATES = ['saved', 'exists', 'renamed']
+const BITCOIN_ADDRESS = 'bc1qf9dufwjyzp7u56lysgn2a0n2956y6xm5dzq6q4'
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms))
 const firstLine = (text) => String(text || '').split('\n')[0].replace(/^Error:\s*/, '')
 const isSigninIssue = (text) => /sign-in|background editor.*403/i.test(String(text || ''))
@@ -558,6 +560,25 @@ function App() {
   }
 
   function openSettings() { setSettingsReturn(view === 'settings' ? 'teams' : view); setQueueOpen(false); setView('settings'); setError(''); toast.dismiss('app-notice') }
+  async function copyBitcoinAddress() {
+    const copied = () => toast.success(t('addressCopied'))
+    try {
+      await navigator.clipboard.writeText(BITCOIN_ADDRESS)
+      copied()
+    } catch {
+      const area = document.createElement('textarea')
+      area.value = BITCOIN_ADDRESS
+      area.style.position = 'fixed'
+      area.style.opacity = '0'
+      document.body.appendChild(area)
+      area.select()
+      try {
+        if (document.execCommand('copy')) copied()
+      } finally {
+        area.remove()
+      }
+    }
+  }
   function leaveSettings() { setView(settingsReturn || 'teams'); setToken(''); setTokenError(''); setError(''); toast.dismiss('app-notice') }
   function redoSetup() { setVerifiedName(''); setView('wizard'); setWizardStep(hasToken ? 'signin' : 'token') }
 
@@ -990,6 +1011,22 @@ function App() {
                 <Button variant="outline" size="sm" onClick={redoSetup}><RotateCcw className="size-3.5" /> {t('redoSetup')}</Button>
               </div>
             </div>
+          )}
+
+          {view === 'settings' && (
+            <Card className="mt-6 px-4 py-3.5">
+              <div className="flex flex-wrap items-start justify-between gap-4">
+                <div className="min-w-0">
+                  <h2 className="text-sm font-medium">{t('donateTitle')}</h2>
+                  <p className="mt-1 max-w-xs text-xs leading-relaxed text-muted-foreground">{t('donateDescription')}</p>
+                  <button type="button" dir="ltr" onClick={copyBitcoinAddress} title={t('copyAddress')} className="mt-2 flex max-w-xs items-center gap-1.5 break-all rounded-md bg-muted/60 px-2 py-1 text-start font-mono text-[11px] leading-relaxed text-muted-foreground transition-colors duration-150 hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring">
+                    {BITCOIN_ADDRESS}
+                    <Copy className="size-3 shrink-0" aria-hidden="true" />
+                  </button>
+                </div>
+                <img src={donateQr} alt="" className="size-28 flex-none rounded-md bg-white p-1" />
+              </div>
+            </Card>
           )}
 
           {view === 'teams' && (

@@ -160,7 +160,7 @@ class ArchiveIndex:
         body = read_json(self.path, {})
         self.names = {
             key: value for key, value in body.get("files", {}).items()
-            if isinstance(value, str) and Path(value).name == value and value.lower().endswith(".fig")
+            if isinstance(value, str) and Path(value).name == value and value.lower().endswith(NATIVE_EXTENSIONS)
         } if isinstance(body, dict) and isinstance(body.get("files"), dict) else {}
 
     def target(self, file: dict) -> tuple[Path, bool]:
@@ -227,7 +227,7 @@ class TreeArchiveIndex:
             path = Path(relative)
             if path.is_absolute() or not path.parts or any(part in (".", "..") for part in path.parts):
                 continue
-            if is_file and not path.name.lower().endswith(".fig"):
+            if is_file and not path.name.lower().endswith(NATIVE_EXTENSIONS):
                 continue
             result[key] = relative
         return result
