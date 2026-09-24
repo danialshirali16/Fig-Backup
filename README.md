@@ -9,6 +9,9 @@
   A desktop app for Apple&nbsp;Silicon Macs and Windows&nbsp;10/11.
 </p>
 
+<!-- Language switcher: add one link per translated README next to "English", e.g.
+     English · <a href="README.fa.md">فارسی</a> · <a href="README.de.md">Deutsch</a> -->
+
 <p align="center">
   <a href="#license"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue"></a>
   <img alt="Platforms" src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows-blue">
@@ -25,14 +28,14 @@ anywhere, and your token stays on your machine.
 ## Screenshots
 
 <!-- Drop the PNGs into docs/screenshots/ with these exact names and they render automatically:
-     setup-wizard.png · browse-select.png · download-manager.png · persian-dark.png
+     setup-wizard.png · browse-select.png · download-manager.png · dark-mode.png
      The app window is 960×700 — PNG at 2× (1920×1400) looks crispest. -->
 
 | Setup wizard | Select mode & the backup pill |
 | --- | --- |
 | <img src="docs/screenshots/setup-wizard.png" alt="Setup wizard — access token step"> | <img src="docs/screenshots/browse-select.png" alt="Browsing a team in Select mode with the floating backup pill"> |
-| **Download manager** | **فارسی · تیره (RTL)** |
-| <img src="docs/screenshots/download-manager.png" alt="Download manager popover with a finished backup"> | <img src="docs/screenshots/persian-dark.png" alt="Browse view in Persian (RTL) with the dark theme"> |
+| **Download manager** | **Dark mode** |
+| <img src="docs/screenshots/download-manager.png" alt="Download manager popover with a finished backup"> | <img src="docs/screenshots/dark-mode.png" alt="Browse view with the dark theme"> |
 
 ## Why?
 
@@ -55,8 +58,6 @@ team, choose folders and files, and keep working while the backup runs in the ba
 - **Structure-preserving archives** — team/folder backups land in
   `Downloads/Fig Backup/<Team>/<Folder>/…`; single files go flat into `Downloads`. Duplicates
   become `name(1).fig`, `name(2).fig`, …
-- **Light / dark / system themes**, English (default) with full Persian RTL, reduced-motion
-  support, and keyboard-accessible selection controls.
 
 ## Download
 
@@ -140,26 +141,6 @@ prebuilt, so Node is only needed after UI changes.
   Python 3.11+) builds `release/Fig Backup/Fig Backup.exe`. No account credentials are bundled
   into the app. Public releases need code-signing and notarization to avoid Gatekeeper warnings.
 
-## Project structure
-
-```
-figma_backup/            Python backend (pywebview bridge, Figma API, browser automation)
-  app.py                 pywebview window + Bridge exposed to the UI (js_api)
-  core.py                Figma REST client, token/preferences stores, archive indexes
-  browser.py             Playwright/Chromium automation of "Save local copy"
-src/                     React interface (built with Vite into dist/)
-  App.jsx                All screens: setup wizard, teams, browse, settings, queue
-  i18n.js                English/Persian copy + translate()
-  index.css              Tailwind v4 entry, shadcn tokens mapped to Figma tokens
-  figma-theme.css        Figma color tokens (light/dark), from @create-figma-plugin/ui
-  styles/style-nova.css  Official shadcn "nova" style layer
-  components/ui/         shadcn base components (radix)
-tests/                   Python unit tests (core bridge logic) + a JS test for download errors
-build-mac.sh / build-windows.sh   PyInstaller packaging scripts (macOS / Windows)
-Fig Backup.command       User launcher (creates venv, installs deps, runs app)
-docs/                    ARCHITECTURE.md, UI.md, screenshots/
-```
-
 ## Documentation
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — backend/frontend split, bridge API, storage
@@ -172,7 +153,7 @@ docs/                    ARCHITECTURE.md, UI.md, screenshots/
 Bug reports, fixes, and features are welcome — open an issue or a pull request. Development setup
 is above. Two conventions to know before you start:
 
-- New UI strings must be added to **both** languages in `src/i18n.js` (`en` and `fa`).
+- UI strings live in `src/i18n.js`; every new key must be added to **all** language objects.
 - The built `dist/` is tracked in git on purpose (the `.command` launcher and packaged apps rely on
   it) — after changing the UI, run `npm run build` and commit the result.
 
@@ -180,10 +161,13 @@ is above. Two conventions to know before you start:
 
 [MIT](LICENSE) — free to use, modify, and redistribute.
 
-## Acknowledgments
+## Donate
 
-- [pywebview](https://pywebview.flow.dev/) — the native window and Python↔JS bridge
-- [Playwright](https://playwright.dev/) — Chromium automation
-- [shadcn/ui](https://ui.shadcn.com) (nova style) + [Radix UI](https://www.radix-ui.com/) — interface components
-- Figma design tokens from [@create-figma-plugin/ui](https://github.com/figma-community/create-figma-plugin)
-- [lucide-react](https://lucide.dev/) — icons
+<!-- TODO: replace with your Bitcoin address and drop donate-qr.png into docs/screenshots/ -->
+
+If Fig Backup saves you time, you can support its development with Bitcoin:
+
+<p align="center">
+  <img src="docs/screenshots/donate-qr.png" alt="Bitcoin donation QR code" width="180"><br>
+  <code>YOUR-BITCOIN-ADDRESS-HERE</code>
+</p>
