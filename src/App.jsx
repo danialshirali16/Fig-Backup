@@ -846,7 +846,7 @@ function App() {
               ) : null}
               <div className="flex flex-wrap items-center gap-2">
                 {view === 'teams' && !setupPending && (
-                  <Button variant="outline" size="sm" onClick={() => discover()} disabled={!!busy}>
+                  <Button variant="link" size="sm" onClick={() => discover()} disabled={!!busy}>
                     {busy === 'teams' ? <Spinner /> : <RefreshCw />} {t('refresh')}
                   </Button>
                 )}
