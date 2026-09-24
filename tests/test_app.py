@@ -1,4 +1,5 @@
 import threading
+import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -53,6 +54,7 @@ class BridgeTests(unittest.TestCase):
         bridge.state = {'running': True, 'phase': 'scanning', 'items': [], 'current': 0,
                         'total': 0, 'saved': 0, 'existing': 0, 'skipped': 0, 'failed': 0,
                         'message': '', 'warning': '', 'finished': False}
+        bridge.browser_state = {'phase': 'ready', 'message': ''}
         return bridge
 
     def test_queue_totals_and_warning(self):
@@ -160,6 +162,72 @@ class BridgeTests(unittest.TestCase):
         bridge.shutdown(grace_seconds=1.0, exit_now=exits.append)
         self.assertTrue(browser.stopped)
         self.assertEqual(exits, [0])
+
+
+class InstallerBrowser:
+    def __init__(self, fail=False):
+        self.release = threading.Event()
+        self.fail = fail
+        self.calls = 0
+
+    def _install_chromium(self):
+        self.calls += 1
+        self.release.wait(timeout=5)
+        if self.fail:
+            raise FigmaError('Automatic Chromium installation failed: offline')
+
+    def stop(self):
+        pass
+
+
+class BrowserInstallTests(unittest.TestCase):
+    def setUp(self):
+        self.executor = ThreadPoolExecutor(max_workers=1)
+
+    def tearDown(self):
+        self.executor.shutdown(wait=True)
+
+    def settle(self, bridge, phase, timeout=5.0):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if bridge.status()['browser']['phase'] == phase:
+                return
+            time.sleep(0.01)
+        self.fail(f'browser_state never reached {phase}: {bridge.status()["browser"]}')
+
+    def test_status_includes_browser_state(self):
+        bridge = BridgeTests.make_bridge(InstallerBrowser())
+        bridge.executor = self.executor
+        bridge.browser_state = {'phase': 'setting_up', 'message': ''}
+        self.assertEqual(bridge.status()['browser'], {'phase': 'setting_up', 'message': ''})
+
+    def test_install_success_marks_ready(self):
+        browser = InstallerBrowser()
+        bridge = BridgeTests.make_bridge(browser)
+        bridge.executor = self.executor
+        self.assertEqual(bridge.install_browser(), {'started': True})
+        self.assertEqual(bridge.status()['browser']['phase'], 'setting_up')
+        browser.release.set()
+        self.settle(bridge, 'ready')
+
+    def test_double_install_is_guarded(self):
+        browser = InstallerBrowser()
+        bridge = BridgeTests.make_bridge(browser)
+        bridge.executor = self.executor
+        self.assertEqual(bridge.install_browser(), {'started': True})
+        self.assertEqual(bridge.install_browser(), {'started': False})
+        browser.release.set()
+        self.settle(bridge, 'ready')
+        self.assertEqual(browser.calls, 1)
+
+    def test_install_failure_carries_message(self):
+        browser = InstallerBrowser(fail=True)
+        bridge = BridgeTests.make_bridge(browser)
+        bridge.executor = self.executor
+        bridge.install_browser()
+        browser.release.set()
+        self.settle(bridge, 'failed')
+        self.assertEqual(bridge.status()['browser']['message'], 'Automatic Chromium installation failed: offline')
 
 
 if __name__ == '__main__':

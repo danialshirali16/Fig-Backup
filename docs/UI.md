@@ -18,8 +18,12 @@ Shown when there is no stored token or setup was never completed. Two steps with
 
 | Step | Contents | Exits |
 | --- | --- | --- |
-| 1 · Access token | PAT input (`figd_…`), scopes hint, privacy note. *Save and continue* verifies via `/v1/me` and shows “Token verified for *name*”. | → Step 2 |
-| 2 · Browser sign-in | Explains the one-time Figma browser session. *Open sign-in window* becomes *I've signed in* after opening. | *I've signed in* → Teams · **I'll sign in later** → Teams (postponed) |
+| 1 · Access token | PAT input (`figd_…`), scopes hint, privacy note. *Save and continue* verifies via `/v1/me` and shows “Token verified for *name*”. While the one-time browser setup runs, a slim status card (spinner + “One-time setup” + indeterminate bar) sits under the privacy note. | → Step 2 |
+| 2 · Browser sign-in | Explains the one-time Figma browser session. *Open sign-in window* becomes *I've signed in* after opening. While setup runs the button is disabled and labeled “Waiting for one-time setup…” above a full status block (badge, ~150 MB note, indeterminate bar); on failure it becomes *Retry setup* next to a danger block (`role="alert"`). | *I've signed in* → Teams · **I'll sign in later** → Teams (postponed; always enabled) |
+
+### One-time browser setup
+
+Chromium (~150 MB) is not bundled; the app auto-downloads it once at launch (`bootstrap` → proactive install). One shared phase model — `ready` renders nothing, `setting_up` renders a brand-tinted status block with an honest **indeterminate** bar (the installer's output is quantized, so no percentage is fabricated; the bar is `aria-hidden` and the block is a `role="status"` live region), `failed` renders the danger pair with *Retry setup* in place. Surfaces: wizard steps 1–2, a Teams banner (Refresh hidden while installing; the “No teams found” empty state is gated on readiness and replaced by “Finding your teams…”), and the download-manager header (spinner block temporarily replaces the determinate progress ring; a running queue item reads “Waiting for one-time setup…”; after success a 2.5 s “Browser ready” flash plus a toast fires). After ~5 minutes the body copy swaps once to a slower-network note. There is deliberately no cancel — quitting the app is the implicit, safe cancel (the installer is idempotent and self-heals on next launch).
 
 - **Postponed sign-in**: the app works normally; if a backup run fails because of a missing
   browser session, the app routes back to step 2 (step 1 shown complete) and the queue offers
@@ -33,8 +37,11 @@ Shown when there is no stored token or setup was never completed. Two steps with
 
 Borderless list of discovered teams (team avatar, name, chevron). Avatars discovered in the
 Figma team switcher are stored locally for display in the app; teams without an available image show
-their initial. *Refresh* re-scrapes the team switcher. If the browser session is missing,
-a banner offers *Open sign-in window* (same as wizard step 2).
+their initial. *Refresh* re-scrapes the team switcher (hidden while the one-time browser setup is
+installing — it cannot help). If the browser session is missing, a banner offers *Open sign-in
+window* (same as wizard step 2). During browser setup a status banner takes that slot (“Downloading
+the backup browser”, or its danger variant with *Retry setup* on failure); the list area shows
+“Finding your teams…” instead of the empty state until setup settles.
 
 Row click → Browse for that team.
 
@@ -86,6 +93,9 @@ there without a persistent bottom bar:
 
 - Header: “Download manager” + item count; a progress ring, run title + current file,
   “*done* of *total*”, and destination path (`~/Downloads/Fig Backup/<Team>/`) when a queue exists.
+  While the one-time browser setup runs, the ring is temporarily replaced by a spinner block with
+  the setup status (danger variant + *Retry setup* on failure); queue items cannot start yet, and a
+  running item reads “Waiting for one-time setup…”.
 - One row per queued item: `Team`/`Folder`/`File` chip, name, live status
   (`Queued → Running → Saved | Failed`), error detail on failures, per-row **Retry**.
 - Footer: **Retry & continue** (after failures), **Cancel remaining (*k*)** (with a confirmation), **Stop after

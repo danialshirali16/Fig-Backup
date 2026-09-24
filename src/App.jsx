@@ -2,9 +2,9 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Popover as PopoverPrimitive } from 'radix-ui'
 import { toast } from 'sonner'
 import {
-  AlertTriangle, Check, CheckCircle2, ChevronRight, Clock, Download, ExternalLink,
-  Folder, Loader2, PenTool, RefreshCw, RotateCcw, Settings as SettingsIcon,
-  Square, X,
+  AlertTriangle, Check, CheckCircle2, ChevronRight, Clock, Copy, Download, ExternalLink,
+  Folder, Loader2, Minus, PenTool, RefreshCw, RotateCcw, Settings as SettingsIcon,
+  ShieldCheck, Square, X,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -14,6 +14,7 @@ import { Badge } from '@/components/ui/badge'
 import { Card } from '@/components/ui/card'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Toaster } from '@/components/ui/sonner'
+import { Alert, AlertDescription } from '@/components/ui/alert'
 import { translate } from './i18n'
 import { downloadFailureDescription } from './download-errors'
 
@@ -21,6 +22,7 @@ const DONE_STATES = ['saved', 'exists', 'renamed']
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms))
 const firstLine = (text) => String(text || '').split('\n')[0].replace(/^Error:\s*/, '')
 const isSigninIssue = (text) => /sign-in|background editor.*403/i.test(String(text || ''))
+const isInstallIssue = (text) => /chromium|installation failed/i.test(String(text || ''))
 
 function bridgeReady() {
   if (window.pywebview?.api?.bootstrap) return Promise.resolve(window.pywebview.api)
@@ -40,6 +42,72 @@ function Ring({ value, label, name }) {
     </span>
   )
 }
+
+function SetupBar() {
+  return (
+    <span aria-hidden="true" className="setup-bar-track mt-3 block h-1 overflow-hidden rounded-full bg-muted">
+      <span className="setup-bar-fill block h-full rounded-full" />
+    </span>
+  )
+}
+
+/* One-time browser setup state. phase: setting_up | failed | ready (ready renders nothing). */
+function BrowserSetupState({ phase, message, escalated, tone = 'full', t }) {
+  if (phase === 'failed') {
+    return (
+      <div role="alert" className="flex items-start gap-2.5 rounded-lg border border-[var(--figma-color-border-danger)] bg-[var(--figma-color-bg-danger-tertiary)] px-3.5 py-3">
+        <AlertTriangle className="mt-0.5 size-4 shrink-0 text-destructive" aria-hidden="true" />
+        <span className="min-w-0 flex-1">
+          <span className="block text-sm font-semibold text-destructive">{t('setupFailed')}</span>
+          {tone === 'full' && message && <span className="mt-0.5 block break-words text-xs leading-snug text-muted-foreground">{message}</span>}
+        </span>
+      </div>
+    )
+  }
+  return (
+    <div role="status" className="rounded-lg border border-primary/25 bg-primary/5 px-3.5 py-3">
+      <div className="flex items-start gap-2.5">
+        <Loader2 className="mt-0.5 size-4 shrink-0 text-brand-text motion-safe:animate-spin" aria-hidden="true" />
+        <span className="min-w-0 flex-1">
+          <span className="flex flex-wrap items-center gap-2">
+            <span className="min-w-0 break-words text-sm font-semibold">{t('setupHeading')}</span>
+            <Badge variant="info">{t('setupBadge')}</Badge>
+          </span>
+          {tone === 'full' && (
+            <span className="mt-0.5 block text-xs leading-relaxed text-muted-foreground text-pretty">{escalated ? t('setupEscalated') : t('setupBody')}</span>
+          )}
+        </span>
+      </div>
+      <SetupBar />
+    </div>
+  )
+}
+
+/* Windows frameless titlebar: caption-style controls rendered inside the app header. */
+function WindowControls({ maximized, t }) {
+  const caption = 'flex h-12 w-12 items-center justify-center text-muted-foreground hover:bg-accent focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring'
+  return (
+    <div className="flex items-center self-stretch">
+      <button className={caption} aria-label={t('winMinimize')} title={t('winMinimize')} onClick={() => window.pywebview.api.minimize_window()}>
+        <Minus className="size-4" aria-hidden="true" />
+      </button>
+      <button className={caption} aria-label={maximized ? t('winRestore') : t('winMaximize')} title={maximized ? t('winRestore') : t('winMaximize')} onClick={() => window.pywebview.api.toggle_maximize_window()}>
+        {maximized ? <Copy className="size-3.5" aria-hidden="true" /> : <Square className="size-3.5" aria-hidden="true" />}
+      </button>
+      <button className={caption + ' hover:bg-destructive hover:text-white'} aria-label={t('close')} title={t('close')} onClick={() => window.pywebview.api.close_window()}>
+        <X className="size-4" aria-hidden="true" />
+      </button>
+    </div>
+  )
+}
+
+/* Invisible edge strips that hand the mouse to the native sizing loop. */
+const RESIZE_EDGES = [
+  ['inset-x-0 top-0 h-1 cursor-n-resize', 12], ['inset-x-0 bottom-0 h-1 cursor-s-resize', 15],
+  ['inset-y-0 left-0 w-1 cursor-w-resize', 10], ['inset-y-0 right-0 w-1 cursor-e-resize', 11],
+  ['left-0 top-0 size-2 cursor-nw-resize', 13], ['right-0 top-0 size-2 cursor-ne-resize', 14],
+  ['bottom-0 left-0 size-2 cursor-sw-resize', 16], ['bottom-0 right-0 size-2 cursor-se-resize', 17],
+]
 
 function TeamAvatar({ team }) {
   const [failed, setFailed] = useState(false)
@@ -83,11 +151,17 @@ function App() {
   const [queueOpen, setQueueOpen] = useState(false)
   const [queueRunning, setQueueRunning] = useState(false)
   const [confirmCancel, setConfirmCancel] = useState(false)
+  const [browserSetup, setBrowserSetup] = useState({ phase: 'ready', message: '' })
+  const [setupReadyFlash, setSetupReadyFlash] = useState(false)
+  const [now, setNow] = useState(Date.now())
   const queueRef = useRef([])
   const queueRunnerRef = useRef(false)
   const stopAfterCurrentRef = useRef(false)
   const selectBtnRef = useRef(null)
   const runIdRef = useRef(0)
+  const browserWatchRef = useRef(false)
+  const setupStartRef = useRef(0)
+  const prevSetupPhaseRef = useRef('ready')
   const language = preferences.language
   const t = (key, values) => translate(language, key, values)
   const countCopy = (key, count) => t(count === 1 ? `${key}One` : key, { count })
@@ -99,6 +173,25 @@ function App() {
     return [[...folders].sort(byName), [...files].sort(byName)]
   }, [folders, files, language])
   const nativeMac = api && window.pywebview?.platform === 'cocoa'
+  const nativeWin = api && window.pywebview?.platform === 'edgechromium'
+  const [maximized, setMaximized] = useState(false)
+
+  useEffect(() => {
+    if (!nativeWin) return
+    const onMax = () => setMaximized(true)
+    const onRestore = () => setMaximized(false)
+    window.addEventListener('figbak-window-maximized', onMax)
+    window.addEventListener('figbak-window-restored', onRestore)
+    return () => {
+      window.removeEventListener('figbak-window-maximized', onMax)
+      window.removeEventListener('figbak-window-restored', onRestore)
+    }
+  }, [nativeWin])
+
+  const setupPending = browserSetup.phase === 'setting_up'
+  const setupFailed = browserSetup.phase === 'failed'
+  const setupBlocked = setupPending || setupFailed
+  const setupEscalated = setupPending && now - setupStartRef.current > 300000
 
   const teamSel = team ? (selection[team.id] || { folders: [], files: [] }) : { folders: [], files: [] }
   const selCount = teamSel.folders.length + teamSel.files.length
@@ -126,6 +219,8 @@ function App() {
         setHasToken(initial.has_token)
         setPreferences(initial.preferences)
         setTeams(initial.teams || [])
+        if (initial.browser) setBrowserSetup(initial.browser)
+        if (initial.browser && initial.browser.phase !== 'ready') watchBrowser(bridge)
         if (initial.preferences.onboarding_complete && initial.has_token) {
           setView('teams')
           await discover(bridge)
@@ -151,6 +246,13 @@ function App() {
     return () => window.removeEventListener('keydown', onKey)
   }, [queueOpen, selectMode])
 
+  /* One-time setup: tick so the 5-minute escalation copy can swap in. */
+  useEffect(() => {
+    if (browserSetup.phase !== 'setting_up') return
+    const timer = window.setInterval(() => setNow(Date.now()), 15000)
+    return () => window.clearInterval(timer)
+  }, [browserSetup.phase])
+
   async function call(label, action) {
     setBusy(label); setError(''); toast.dismiss('app-notice')
     try { return await action() }
@@ -169,6 +271,34 @@ function App() {
     if (!result) return
     setTeams(result.teams || [])
     setAuthRequired(!!result.auth_required)
+  }
+
+  /* One-time browser setup: poll the bridge until the installer settles. */
+  async function watchBrowser(bridge = api) {
+    if (browserWatchRef.current || !bridge) return
+    browserWatchRef.current = true
+    setupStartRef.current = Date.now()
+    try {
+      for (;;) {
+        const s = await bridge.status()
+        const next = s.browser || { phase: 'ready', message: '' }
+        setBrowserSetup(next)
+        if (next.phase === 'ready' && prevSetupPhaseRef.current !== 'ready') {
+          toast.success(t('setupReady'), { id: 'app-notice' })
+          setSetupReadyFlash(true)
+          window.setTimeout(() => setSetupReadyFlash(false), 2500)
+        }
+        prevSetupPhaseRef.current = next.phase
+        if (next.phase !== 'setting_up') break
+        await sleep(500)
+      }
+    } catch { /* bridge unavailable during shutdown */ }
+    finally { browserWatchRef.current = false }
+  }
+
+  async function retryBrowserSetup() {
+    await call('browser-setup', () => api.install_browser())
+    watchBrowser()
   }
 
   async function saveTokenContinue(event) {
@@ -338,7 +468,7 @@ function App() {
             routeToSignin()
             break
           }
-          updateQueueItem(item.id, { status: 'failed', detail: msg || t('downloadFailureFallback') })
+          updateQueueItem(item.id, { status: 'failed', detail: isInstallIssue(msg) ? t('queueBlockedDetail') : (msg || t('downloadFailureFallback')) })
         }
         if (stopAfterCurrentRef.current) break
       }
@@ -435,7 +565,7 @@ function App() {
 
   /* ---------- wizard ---------- */
   const wizard = view === 'wizard' && (
-    <Card className="mx-auto w-full max-w-xl p-5 sm:p-6">
+    <Card className="mx-auto w-full max-w-xl p-0 ring-0">
       <div className="mb-5 flex items-center">
         {[['token', t('stepToken')], ['signin', t('stepSignin')]].map(([key, label], i) => {
           const cur = wizardStep === key
@@ -464,7 +594,11 @@ function App() {
             <Input id="token-wizard" type="password" value={token} onInput={e => { setToken(e.currentTarget.value); setTokenError('') }} placeholder="figd_…" autoComplete="off" aria-invalid={!!tokenError} />
             {tokenError && <p role="alert" className="text-xs font-medium text-destructive">{tokenError}</p>}
             <p className="text-xs text-muted-foreground">{t('tokenHint')}</p>
-            <p className="rounded-lg bg-muted px-3.5 py-2.5 text-xs leading-relaxed text-muted-foreground">{t('tokenPrivacy')}</p>
+            <Alert className="text-start">
+              <ShieldCheck />
+              <AlertDescription className="text-xs leading-relaxed">{t('tokenPrivacy')}</AlertDescription>
+            </Alert>
+            {setupPending && <BrowserSetupState phase="setting_up" tone="slim" t={t} />}
             <div className="mt-2 flex flex-wrap items-center gap-3">
               <span className="me-auto text-[11px] text-muted-foreground">
                 {t('language')}: <b className="font-semibold text-foreground">{language === 'en' ? t('english') : t('persian')}</b> · <button type="button" className="font-semibold text-brand-text hover:underline" onClick={openSettings}>{t('settings')}</button>
@@ -486,13 +620,27 @@ function App() {
                 <Badge variant="success"><CheckCircle2 className="size-3" /> {t('verified')}</Badge>
               </div>
             )}
-            <div className="rounded-lg bg-muted px-3.5 py-2.5 text-sm leading-relaxed text-muted-foreground text-pretty">{t('signInDescription')}</div>
+            <Alert className="text-start">
+              <ShieldCheck />
+              <AlertDescription className="leading-relaxed">{t('signInDescription')}</AlertDescription>
+            </Alert>
+            {setupBlocked && (
+              <BrowserSetupState phase={setupFailed ? 'failed' : 'setting_up'} message={browserSetup.message} escalated={setupEscalated} t={t} />
+            )}
             <div className="mt-2 flex flex-wrap items-center justify-end gap-2">
               <Button variant="ghost" onClick={completeSetup}>{t('signinLater')}</Button>
-              <Button onClick={signInNow} disabled={!!busy}>
-                {busy === 'sign-in' ? <Spinner /> : loginOpen ? <CheckCircle2 className="size-4" /> : <ExternalLink className="size-4" />}
-                {loginOpen ? t('iveSignedIn') : t('openSignIn')}
-              </Button>
+              {setupPending ? (
+                <Button disabled><Spinner /> {t('setupWaiting')}</Button>
+              ) : setupFailed ? (
+                <Button onClick={retryBrowserSetup} disabled={!!busy}>
+                  {busy === 'browser-setup' ? <Spinner /> : <RotateCcw className="size-4" />} {t('setupRetry')}
+                </Button>
+              ) : (
+                <Button onClick={signInNow} disabled={!!busy}>
+                  {busy === 'sign-in' ? <Spinner /> : loginOpen ? <CheckCircle2 className="size-4" /> : <ExternalLink className="size-4" />}
+                  {loginOpen ? t('iveSignedIn') : t('openSignIn')}
+                </Button>
+              )}
             </div>
           </div>
         </>
@@ -527,13 +675,35 @@ function App() {
           <X className="size-3.5" aria-hidden="true" />
         </button>
       </div>
-      {(progress.running || progress.total > 0 || queue.length > 0) && (
+      {(progress.running || progress.total > 0 || queue.length > 0 || setupBlocked) && (
         <div role="status" className="flex items-center gap-3 border-b px-4 py-3">
-          <Ring value={percentage} label={percentage} name={t('progressTitle')} />
+          {setupReadyFlash ? (
+            <span className="grid size-9 flex-none place-items-center rounded-full bg-success/15 text-success">
+              <CheckCircle2 className="size-5" aria-hidden="true" />
+            </span>
+          ) : setupPending ? (
+            <span aria-hidden="true" className="grid size-9 flex-none place-items-center rounded-full bg-primary/10">
+              <Loader2 className="size-4 text-brand-text motion-safe:animate-spin" />
+            </span>
+          ) : (
+            <Ring value={percentage} label={percentage} name={t('progressTitle')} />
+          )}
           <span className="min-w-0 flex-1">
-            <span className="block truncate text-xs font-bold">{barTitle}</span>
-            <span className="block truncate text-[10.5px] text-muted-foreground">{barSub}</span>
+            <span className="block truncate text-xs font-bold">
+              {setupReadyFlash ? t('setupReady') : setupFailed ? t('setupFailed') : setupPending ? t('setupHeading') : barTitle}
+            </span>
+            <span className="block truncate text-[10.5px] text-muted-foreground">
+              {setupReadyFlash ? t('setupBadge')
+                : setupFailed ? (browserSetup.message || t('queueBlockedDetail'))
+                : setupPending ? (setupEscalated ? t('setupEscalated') : t('setupBody'))
+                : barSub}
+            </span>
           </span>
+          {setupFailed && (
+            <Button variant="outline" size="sm" onClick={retryBrowserSetup} className="flex-none">
+              {busy === 'browser-setup' ? <Spinner /> : <RotateCcw className="size-3" />} {t('setupRetry')}
+            </Button>
+          )}
         </div>
       )}
       {progress.destination && queue.length > 0 && (
@@ -565,7 +735,11 @@ function App() {
                   <Button variant="outline" size="sm" onClick={() => retryItem(item.id)}><RotateCcw className="size-3" /> {t('retry')}</Button>
                 )}
                 <span className={'flex-none text-end text-xs font-semibold ' + (item.status === 'done' ? 'text-success' : item.status === 'failed' ? 'text-destructive' : item.status === 'running' ? 'text-brand-text' : 'text-muted-foreground')}>
-                  {item.status === 'done' ? t('statusSaved') : item.status === 'running' ? t('running') : item.status === 'failed' ? t('statusFailed') : item.status === 'stopped' ? t('statusStopped') : t('statusQueued')}
+                  {item.status === 'done' ? t('statusSaved')
+                    : item.status === 'running' ? (setupPending ? t('setupWaiting') : t('running'))
+                    : item.status === 'failed' ? t('statusFailed')
+                    : item.status === 'stopped' ? t('statusStopped')
+                    : t('statusQueued')}
                 </span>
               </div>
             ))}
@@ -601,11 +775,19 @@ function App() {
   const inSelect = view === 'browse' && selectMode
 
   return (
-    <div className={'flex min-h-screen flex-col' + (nativeMac ? ' native-mac-titlebar' : '')}>
+    <div className={'flex min-h-screen flex-col' + (nativeMac ? ' native-mac-titlebar' : '') + (nativeWin ? ' native-win-titlebar' : '')}>
       <a href="#main" className="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:m-3 focus:rounded-md focus:bg-background focus:px-3 focus:py-2 focus:shadow">{t('skipToContent')}</a>
       <Toaster theme={appearance} position={rtl ? 'bottom-left' : 'bottom-right'} closeButton offset={16} />
 
-      <header className="pywebview-drag-region sticky top-0 z-30 border-b bg-background/80 backdrop-blur">
+      <header
+        className="pywebview-drag-region sticky top-0 z-30 border-b bg-background/80 backdrop-blur relative"
+        onDoubleClick={nativeWin ? () => window.pywebview.api.toggle_maximize_window() : undefined}
+      >
+        {nativeWin && (
+          <div className="absolute inset-y-0 end-0 z-10">
+            <WindowControls maximized={maximized} t={t} />
+          </div>
+        )}
         <div className="pywebview-drag-region app-header-inner mx-auto flex h-12 w-full max-w-[680px] items-center gap-2.5 px-4">
           {view === 'settings' ? (
             <div className="flex min-w-0 items-center gap-1">
@@ -663,7 +845,7 @@ function App() {
                 <p className="text-lg font-semibold text-foreground">{t('teamsDescription')}</p>
               ) : null}
               <div className="flex flex-wrap items-center gap-2">
-                {view === 'teams' && (
+                {view === 'teams' && !setupPending && (
                   <Button variant="outline" size="sm" onClick={() => discover()} disabled={!!busy}>
                     {busy === 'teams' ? <Spinner /> : <RefreshCw />} {t('refresh')}
                   </Button>
@@ -741,6 +923,31 @@ function App() {
 
           {view === 'teams' && (
             <div className="w-full">
+              {setupPending && (
+                <div className="flex flex-wrap items-center justify-between gap-3 bg-primary/5 px-3 py-3.5">
+                  <div className="flex min-w-0 items-start gap-2.5">
+                    <Loader2 className="mt-0.5 size-4 shrink-0 text-brand-text motion-safe:animate-spin" aria-hidden="true" />
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold text-brand-text">{t('setupHeading')}</p>
+                      <p className="mt-0.5 max-w-md text-xs leading-relaxed text-muted-foreground">{setupEscalated ? t('setupEscalated') : t('setupBody')}</p>
+                    </div>
+                  </div>
+                </div>
+              )}
+              {setupFailed && (
+                <div className="flex flex-wrap items-center justify-between gap-3 bg-[var(--figma-color-bg-danger-tertiary)] px-3 py-3.5">
+                  <div className="flex min-w-0 items-start gap-2.5">
+                    <AlertTriangle className="mt-0.5 size-4 shrink-0 text-destructive" aria-hidden="true" />
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold text-destructive">{t('setupFailed')}</p>
+                      {browserSetup.message && <p className="mt-0.5 max-w-md break-words text-xs leading-relaxed text-muted-foreground">{browserSetup.message}</p>}
+                    </div>
+                  </div>
+                  <Button variant="outline" size="sm" onClick={retryBrowserSetup} disabled={!!busy}>
+                    {busy === 'browser-setup' ? <Spinner /> : <RotateCcw className="size-3" />} {t('setupRetry')}
+                  </Button>
+                </div>
+              )}
               {authRequired && (
                 <div className="flex flex-wrap items-center justify-between gap-3 bg-primary/5 px-3 py-3.5">
                   <div>
@@ -759,7 +966,12 @@ function App() {
                   </button>
                 ))}
               </div>
-              {!teams.length && <div className="px-3 py-8 text-center text-sm text-muted-foreground">{t('noTeams')}</div>}
+              {!teams.length && setupPending && (
+                <div role="status" className="px-3 py-8 text-center text-sm text-muted-foreground">{t('teamsPending')}</div>
+              )}
+              {!teams.length && !setupBlocked && (
+                <div className="px-3 py-8 text-center text-sm text-muted-foreground">{t('noTeams')}</div>
+              )}
             </div>
           )}
 
@@ -813,6 +1025,18 @@ function App() {
         </>
       }
       </main>
+
+      {nativeWin && !maximized && (
+        <div aria-hidden="true">
+          {RESIZE_EDGES.map(([classes, edge]) => (
+            <div
+              key={edge}
+              className={'fixed z-50 ' + classes}
+              onMouseDown={() => window.pywebview.api.begin_resize(edge)}
+            />
+          ))}
+        </div>
+      )}
 
       {pill}
     </div>

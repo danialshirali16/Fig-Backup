@@ -115,3 +115,35 @@
 @media (max-width: 840px) {
   .native-mac-titlebar .app-header-inner { padding-left: 96px; }
 }
+
+/* Windows frameless titlebar: keep header actions clear of the caption buttons. */
+.native-win-titlebar .app-header-inner { padding-inline-end: 144px; }
+
+/* Indeterminate bar for the one-time browser setup (no honest % exists, so
+   the sweep never implies progress). RTL mirrors the sweep direction. */
+.setup-bar-track { transform-origin: center; }
+[dir='rtl'] .setup-bar-track { transform: scaleX(-1); }
+
+.setup-bar-fill {
+  width: 33%;
+  background-color: var(--primary);
+}
+
+/* Dark primary is a deep blue that vanishes on the tinted card; the light
+   brand text token is the same accent the spinner uses (~7:1 there). */
+:root.dark .setup-bar-fill { background-color: var(--figma-color-text-brand); }
+:root.dark .setup-bar-track { background-color: rgb(255 255 255 / 0.1); }
+
+@media (prefers-reduced-motion: no-preference) {
+  .setup-bar-fill { animation: setup-bar-sweep 1.6s ease-in-out infinite; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .setup-bar-fill { background-color: color-mix(in srgb, var(--primary) 40%, transparent); }
+  :root.dark .setup-bar-fill { background-color: color-mix(in srgb, var(--figma-color-text-brand) 40%, transparent); }
+}
+
+@keyframes setup-bar-sweep {
+  from { transform: translateX(-110%); }
+  to { transform: translateX(410%); }
+}

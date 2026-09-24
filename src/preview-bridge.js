@@ -45,18 +45,39 @@ const idleStatus = () => ({
 export function installPreviewBridge() {
   if (window.pywebview) return
 
-  let preferences = { language: 'en', theme: 'system', onboarding_complete: true }
+  // `?preview=1&browser-install` exercises the one-time setup state.
+  // `&fresh` starts with onboarding pending so the setup wizard is shown.
+  // `&win-titlebar` fakes the Windows shell to render the in-app caption buttons.
+  const params = new URLSearchParams(window.location.search)
+  const fakeInstall = params.has('browser-install')
+  const fakeWindows = params.has('win-titlebar')
+  let browserState = fakeInstall ? { phase: 'setting_up', message: '' } : { phase: 'ready', message: '' }
+  if (fakeInstall) {
+    window.setTimeout(() => { browserState = { phase: 'ready', message: '' } }, 6000)
+  }
+  let fakeMaximized = false
+
+  let preferences = { language: 'en', theme: 'system', onboarding_complete: !params.has('fresh') }
   const previewTeams = [...teams]
   let status = idleStatus()
 
   window.pywebview = {
-    platform: 'browser-preview',
+    platform: fakeWindows ? 'edgechromium' : 'browser-preview',
     api: {
-      bootstrap: async () => ({ has_token: true, teams: previewTeams, preferences }),
+      bootstrap: async () => ({ has_token: true, teams: previewTeams, preferences, browser: { ...browserState } }),
       discover_teams: async () => ({ teams: previewTeams, auth_required: false }),
       save_preferences: async changes => (preferences = { ...preferences, ...changes }),
       save_token: async () => ({ name: 'Preview user' }),
       open_sign_in: async () => ({ opened: false }),
+      install_browser: async () => ({ started: true }),
+      minimize_window: async () => ({ ok: true }),
+      toggle_maximize_window: async () => {
+        fakeMaximized = !fakeMaximized
+        window.dispatchEvent(new Event(fakeMaximized ? 'figbak-window-maximized' : 'figbak-window-restored'))
+        return { ok: true }
+      },
+      close_window: async () => ({ ok: true }),
+      begin_resize: async () => ({ ok: false }),
       folders: async id => ({ folders: foldersByParent[id] || [], legacy: false }),
       subfolders: async id => ({ folders: foldersByParent[id] || [], unavailable: false }),
       files: async id => ({ files: filesByFolder[id] || [], unavailable: false }),
@@ -66,7 +87,7 @@ export function installPreviewBridge() {
         return { started: true }
       },
       stop_download: async () => ({ stopped: true }),
-      status: async () => status,
+      status: async () => ({ ...status, browser: { ...browserState } }),
       open_destination: async () => ({ opened: false }),
       open_downloads: async () => ({ opened: false }),
     },

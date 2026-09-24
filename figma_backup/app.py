@@ -1,6 +1,7 @@
 """Desktop bridge. Browser work is confined to one worker thread."""
 from __future__ import annotations
 
+import ctypes
 import os
 import subprocess
 import sys
@@ -12,7 +13,7 @@ from pathlib import Path
 import webview
 from playwright._impl._errors import TargetClosedError
 
-from .browser import Browser
+from .browser import Browser, chromium_ready
 from .core import APP_SUPPORT, BrowserAuthError, DOWNLOADS, SUPPORT, ArchiveIndex, FigmaClient, FigmaError, PreferencesStore, TokenStore, TreeArchiveIndex, merge_teams, read_json, team_id_from_input, write_json
 
 
@@ -28,7 +29,37 @@ class Bridge:
         self.state = {"running": False, "phase": "idle", "items": [], "current": 0, "total": 0,
                       "saved": 0, "existing": 0, "skipped": 0, "failed": 0,
                       "message": "", "warning": "", "finished": False}
+        # Kept outside self.state: start_download replaces that dict wholesale.
+        self.browser_state = {"phase": "ready" if chromium_ready() else "missing", "message": ""}
+        self.maximized = False
         self.stop_requested = False
+
+    def minimize_window(self) -> dict:
+        webview.windows[0].minimize()
+        return {"ok": True}
+
+    def toggle_maximize_window(self) -> dict:
+        window = webview.windows[0]
+        if self.maximized:
+            window.restore()
+        else:
+            window.maximize()
+        return {"ok": True}
+
+    def close_window(self) -> dict:
+        webview.windows[0].destroy()
+        return {"ok": True}
+
+    def begin_resize(self, edge: int) -> dict:
+        """Hand the mouse to the native sizing loop (frameless edge strips, Windows)."""
+        edge = int(edge)
+        if sys.platform != "win32" or self.maximized or not 10 <= edge <= 17:
+            return {"ok": False}
+        window = webview.windows[0]
+        WM_NCLBUTTONDOWN = 0xA1
+        ctypes.windll.user32.ReleaseCapture()
+        ctypes.windll.user32.SendMessageW(int(window.native.Handle), WM_NCLBUTTONDOWN, edge, 0)
+        return {"ok": True}
 
     def _required(self) -> FigmaClient:
         if not self.client:
@@ -39,9 +70,29 @@ class Bridge:
         SUPPORT.mkdir(parents=True, exist_ok=True, mode=0o700)
         APP_SUPPORT.mkdir(parents=True, exist_ok=True, mode=0o700)
         DOWNLOADS.mkdir(parents=True, exist_ok=True)
+        if self.browser_state["phase"] == "missing":
+            self.install_browser()
         return {"has_token": bool(self.token), "downloads": str(DOWNLOADS),
                 "teams": read_json(SUPPORT / "teams.json", []),
-                "preferences": self.preferences_store.load(), "version": "0.2.0"}
+                "preferences": self.preferences_store.load(),
+                "browser": dict(self.browser_state), "version": "0.2.0"}
+
+    def install_browser(self) -> dict:
+        with self.lock:
+            if self.browser_state["phase"] == "setting_up":
+                return {"started": False}
+            self.browser_state = {"phase": "setting_up", "message": ""}
+        self.executor.submit(self._run_install)
+        return {"started": True}
+
+    def _run_install(self) -> None:
+        try:
+            self.browser._install_chromium()
+            with self.lock:
+                self.browser_state = {"phase": "ready", "message": ""}
+        except Exception as error:
+            with self.lock:
+                self.browser_state = {"phase": "failed", "message": str(error).splitlines()[0]}
 
     def save_preferences(self, changes: dict) -> dict:
         return self.preferences_store.save(changes)
@@ -125,7 +176,8 @@ class Bridge:
 
     def status(self) -> dict:
         with self.lock:
-            return {**self.state, "items": [item.copy() for item in self.state["items"]]}
+            return {**self.state, "items": [item.copy() for item in self.state["items"]],
+                    "browser": dict(self.browser_state)}
 
     def _set(self, **changes) -> None:
         with self.lock:
@@ -333,12 +385,24 @@ def main() -> None:
     webview.settings['DRAG_REGION_DIRECT_TARGET_ONLY'] = True
     window = webview.create_window("Fig Backup", str(html), js_api=bridge,
                                    width=960, height=700, min_size=(640, 520),
+                                   frameless=sys.platform == "win32",
                                    background_color="#f5f5f5")
     if sys.platform == "darwin":
         window.events.before_show += configure_titlebar
         window.events.shown += position_titlebar_buttons
         window.events.resized += refresh_titlebar_buttons
         window.events.restored += refresh_titlebar_buttons
+    if sys.platform == "win32":
+        def on_maximized():
+            bridge.maximized = True
+            window.evaluate_js("window.dispatchEvent(new Event('figbak-window-maximized'))")
+
+        def on_restored():
+            bridge.maximized = False
+            window.evaluate_js("window.dispatchEvent(new Event('figbak-window-restored'))")
+
+        window.events.maximized += on_maximized
+        window.events.restored += on_restored
     window.events.closed += bridge.shutdown
     webview.start(gui="edgechromium" if sys.platform == "win32" else "cocoa",
                   debug="--debug" in sys.argv)

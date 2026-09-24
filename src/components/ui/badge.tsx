@@ -16,7 +16,7 @@ const badgeVariants = cva(
         link: "cn-badge-variant-link",
         // Local additions for Fig Backup status badges (nova-style soft tints)
         success: "bg-success/10 text-success dark:bg-success/15",
-        info: "bg-primary/10 text-primary",
+        info: "bg-primary/10 text-primary dark:bg-primary/15 dark:text-[var(--figma-color-text-brand)]",
       },
     },
     defaultVariants: {

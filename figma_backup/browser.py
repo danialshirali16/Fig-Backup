@@ -16,6 +16,14 @@ from playwright._impl._errors import TargetClosedError
 
 from .core import ArchiveIndex, BrowserAuthError, FigmaError, SUPPORT, merge_teams, verify_fig
 
+# Children of a windowed exe must not allocate a console (the Playwright
+# installer and its node.exe driver are console-subsystem programs).
+# CREATE_NO_WINDOW only exists on Windows.
+if sys.platform == "win32":
+    SUBPROCESS_FLAGS = subprocess.CREATE_NO_WINDOW
+else:
+    SUBPROCESS_FLAGS = 0
+
 
 class Browser:
     def __init__(self, support: Path = SUPPORT):
@@ -26,14 +34,16 @@ class Browser:
         self.headless = True
         self.use_headless_shell = False
 
-    def open(self, headless: bool = True) -> None:
-        self.close()
+    @staticmethod
+    def browser_cache_dir() -> Path:
         # Keep browser downloads in a writable per-user cache outside the frozen app.
         if sys.platform == "win32":
-            browser_cache = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData/Local")) / "ms-playwright"
-        else:
-            browser_cache = Path.home() / "Library/Caches/ms-playwright"
-        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(browser_cache)
+            return Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData/Local")) / "ms-playwright"
+        return Path.home() / "Library/Caches/ms-playwright"
+
+    def open(self, headless: bool = True) -> None:
+        self.close()
+        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(self.browser_cache_dir())
         if self.playwright is None:
             self.playwright = sync_playwright().start()
         self.support.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -46,7 +56,8 @@ class Browser:
             options["channel"] = "chromium"
         if headless:
             version = subprocess.run([str(browser_binary), "--version"],
-                                     check=True, capture_output=True, text=True).stdout
+                                     check=True, capture_output=True, text=True,
+                                     creationflags=SUBPROCESS_FLAGS).stdout
             match = re.search(r"(\d+\.\d+\.\d+\.\d+)", version)
             if not match:
                 raise FigmaError("Could not determine the Chromium version")
@@ -80,7 +91,8 @@ class Browser:
         driver, cli = compute_driver_executable()
         try:
             subprocess.run([str(driver), str(cli), "install", "chromium"],
-                           check=True, capture_output=True, text=True, timeout=900)
+                           check=True, capture_output=True, text=True, timeout=900,
+                           creationflags=SUBPROCESS_FLAGS)
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
             raise FigmaError(f"Automatic Chromium installation failed: {error}") from error
 
@@ -332,3 +344,25 @@ class Browser:
         finally:
             temporary.unlink(missing_ok=True)
         return {"status": "saved", "path": str(destination), "size": size}
+
+
+def chromium_ready(cache_dir: Path | None = None) -> bool:
+    """Advisory check for the UI: a chromium build with Playwright's completion marker.
+
+    Fails toward False (missing); Browser.open() remains the authoritative installer.
+    """
+    root = cache_dir if cache_dir is not None else Browser.browser_cache_dir()
+    if not root.is_dir():
+        return False
+    for directory in root.glob("chromium-*"):
+        if not (directory / "INSTALLATION_COMPLETE").exists():
+            continue
+        if sys.platform == "win32":
+            if any(directory.glob("chrome-win*/*.exe")):
+                return True
+        elif sys.platform == "darwin":
+            if any(directory.glob("chrome-mac*/*.app")):
+                return True
+        else:
+            return True
+    return False

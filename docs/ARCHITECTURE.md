@@ -19,9 +19,10 @@ class in `figma_backup/app.py`), and the Bridge runs all browser work on a singl
 
 | Method | Purpose |
 | --- | --- |
-| `bootstrap()` | Create support dirs, return `{has_token, downloads, teams, preferences, version}` |
+| `bootstrap()` | Create support dirs, return `{has_token, downloads, teams, preferences, browser, version}`; when `browser.phase` is `missing`, proactively submits the one-time Chromium install |
 | `save_preferences(changes)` | Persist language/theme/onboarding flags (validated) |
 | `save_token(token)` | Validate via `/v1/me`, store to `token.json` (0600); returns `{name}` |
+| `install_browser()` | Run the one-time Playwright Chromium install on the worker thread; guarded (`{started: false}` while already installing) |
 | `discover_teams()` | Headless browser scrape of the team switcher; merges with `teams.json` |
 | `add_team(link, name)` | Register a team by URL/ID |
 | `folders(team_id)` | v2 Folders API with fallback to legacy v1 Projects API |
@@ -30,7 +31,7 @@ class in `figma_backup/app.py`), and the Bridge runs all browser work on a singl
 | `open_sign_in()` | Visible Chromium window on figma.com/files for one-time sign-in |
 | `start_download(selection)` | Start one backup; scopes: `{team, scope:'team'}` / `{scope:'folder', folder}` / `{scope:'file', folder, file_key}` |
 | `stop_download()` | Ask the current run to stop after the active file |
-| `status()` | Snapshot `{running, phase, items, total, saved, existing, skipped, failed, message, destination, finished}` |
+| `status()` | Snapshot `{running, phase, items, total, saved, existing, skipped, failed, message, destination, finished, browser}` |
 | `open_destination()` / `open_downloads()` | Reveal folders in Finder |
 
 `start_download` supports a **single scope per call**. Multi-select backups are implemented in the
@@ -55,6 +56,13 @@ UI as a sequential queue of per-item `start_download` calls (see “Backup queue
 - Launches a **persistent Chromium context** (profile in the legacy support folder) so the Figma
   session survives restarts. Headless for all background work; a visible window only for the
   one-time sign-in.
+- **One-time install**: Chromium is not bundled. `chromium_ready()` (executable glob + Playwright's
+  `INSTALLATION_COMPLETE` marker; fails toward "missing") drives the UI state; `bootstrap()` submits
+  the install proactively when missing, exposed as a separate `browser` state dict
+  (`ready | missing | setting_up | failed` — separate from the download state because
+  `start_download` replaces that dict). `Browser.open()` keeps its own lazy install as the safety
+  net, and `playwright install` is idempotent, so retries need no cleanup. Subprocesses pass
+  `CREATE_NO_WINDOW` on Windows so the windowed exe never flashes a console.
 - Headless runs set a real Chrome user agent (derived from the installed Chromium version) and
   neutralize `navigator.webdriver`.
 - **Save local copy** flow: keyboard shortcut `Cmd+/` → quick-action search → “save local copy”;
@@ -152,7 +160,12 @@ avoid the system's padded icon fallback.
 
 On Cocoa, `app.py` extends the content view into a transparent titlebar and hides the duplicate
 native title while retaining the standard window controls. The web header supplies drag regions;
-its layout leaves room for the controls at narrow window widths.
+its layout leaves room for the controls at narrow window widths. On Windows the window is created
+`frameless`: the web header becomes the titlebar — caption buttons (`minimize_window`,
+`toggle_maximize_window`, `close_window`) render at its trailing edge, double-click toggles
+maximize (state mirrored back via the `maximized`/`restored` events), invisible edge strips call
+`begin_resize` to hand the mouse to the native sizing loop, and the `pywebview-drag-region`
+header moves the window.
 
 ## Tests
 
