@@ -21,9 +21,9 @@
 
 ---
 
-Fig Backup saves real, native `.fig` copies of your Figma files — with your folder structure
-preserved — straight into your Downloads folder. It is a **local desktop app**: nothing is uploaded
-anywhere, and your token stays on your machine.
+Fig Backup saves native copies of your Figma files — `.fig` for Design, `.jam` for FigJam,
+`.deck` for Slides — with your folder structure preserved, straight into your Downloads folder.
+It is a **local desktop app**: nothing is uploaded anywhere, and your token stays on your machine.
 
 ## Screenshots
 
