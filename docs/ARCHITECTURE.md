@@ -154,9 +154,8 @@ failed items are surfaced as badges, never folded into the percentage.
 
 `build-mac.sh` runs PyInstaller (`--windowed --onedir --icon app-icon.icns`) with the built
 `dist/` embedded as data and `playwright`/`webview` collected. `app-icon.icns` is generated from
-the opaque `app-icon-macos.png` with `sips` + `iconutil` on every build. The original
-`app-icon.png` remains the artwork source; the macOS variant fills transparent corners to
-avoid the system's padded icon fallback.
+the opaque `app-icon-macos.png` with `sips` + `iconutil` on every build. `app-icon.png`
+is the artwork source for both the macOS variant and the multi-size Windows `.ico`.
 
 On Cocoa, `app.py` extends the content view into a transparent titlebar and hides the duplicate
 native title while retaining the standard window controls. The web header supplies drag regions;
