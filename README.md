@@ -16,7 +16,7 @@
   <a href="#license"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue"></a>
   <img alt="Platforms" src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows-blue">
   <img alt="Python" src="https://img.shields.io/badge/python-3.9%2B-informational">
-  <a href="https://github.com/danialshirali16/Fig-Backup-Mac/actions/workflows/windows-build.yml?query=branch%3Awindows-build"><img alt="Windows build" src="https://github.com/danialshirali16/Fig-Backup-Mac/actions/workflows/windows-build.yml/badge.svg?branch=windows-build"></a>
+  <a href="https://github.com/danialshirali16/Fig-Backup/actions/workflows/windows-build.yml?query=branch%3Awindows-build"><img alt="Windows build" src="https://github.com/danialshirali16/Fig-Backup/actions/workflows/windows-build.yml/badge.svg?branch=windows-build"></a>
 </p>
 
 ---
@@ -62,7 +62,7 @@ team, choose folders and files, and keep working while the backup runs in the ba
 ## Download
 
 Grab the latest build from the
-[**Releases page**](https://github.com/danialshirali16/Fig-Backup-Mac/releases).
+[**Releases page**](https://github.com/danialshirali16/Fig-Backup/releases).
 
 | | |
 | --- | --- |
