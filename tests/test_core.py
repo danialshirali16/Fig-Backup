@@ -1,5 +1,6 @@
 import json
 import stat
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -35,8 +36,9 @@ class CoreTests(unittest.TestCase):
             self.assertIsNone(store.load())
             store.save(' figd_test ')
             self.assertEqual(TokenStore(support).load(), 'figd_test')
-            self.assertEqual(stat.S_IMODE(support.stat().st_mode), 0o700)
-            self.assertEqual(stat.S_IMODE(store.path.stat().st_mode), 0o600)
+            if sys.platform != 'win32':  # POSIX permission bits are not enforced on Windows
+                self.assertEqual(stat.S_IMODE(support.stat().st_mode), 0o700)
+                self.assertEqual(stat.S_IMODE(store.path.stat().st_mode), 0o600)
             store.clear()
             self.assertIsNone(store.load())
 

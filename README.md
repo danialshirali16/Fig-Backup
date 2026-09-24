@@ -40,7 +40,7 @@ For UI review in a browser, run `npm run dev` and open
 `http://127.0.0.1:5173/?preview=1`. This development-only view uses sample
 teams and folders; it does not connect to Figma or start real backups.
 
-Run `./build-mac.sh` to create an Apple Silicon app in `release/` (bundles `app-icon.icns`). Public GitHub releases need code-signing and notarization to avoid Gatekeeper warnings. No account credentials are bundled into the app.
+Run `./build-mac.sh` to create an Apple Silicon app in `release/` (bundles `app-icon.icns`). Public GitHub releases need code-signing and notarization to avoid Gatekeeper warnings. On Windows, run `./build-windows.sh` from Git Bash (Node 22+, Python 3.11+) to create `release/Fig Backup/Fig Backup.exe` (bundles `app-icon-windows.ico`; needs the WebView2 runtime, preinstalled on Windows 10/11). No account credentials are bundled into the app.
 
 Only use Fig Backup with files you are authorized to access. Figma's web UI may change, so the browser automation may need maintenance. The Figma REST API does not provide native `.fig` exports; this app uses the web editor's local-copy workflow.
 
@@ -62,7 +62,8 @@ app-icon.png            Original icon artwork
 app-icon-macos.png      Opaque, full-bleed icon for macOS app packaging
 tests/                   Python unit tests (core bridge logic)
 app-icon.icns            macOS app icon (regenerated from app-icon-macos.png by build-mac.sh)
-build-mac.sh             PyInstaller packaging script
+build-mac.sh             PyInstaller packaging script (macOS)
+build-windows.sh         PyInstaller packaging script (Windows)
 Fig Backup.command       User launcher (creates venv, installs deps, runs app)
 docs/ARCHITECTURE.md     How the pieces fit together
 docs/UI.md               Screens, flows, design system, accessibility
