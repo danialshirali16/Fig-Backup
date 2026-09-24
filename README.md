@@ -42,8 +42,8 @@ team, choose folders and files, and keep working while the backup runs in the ba
 
 ## Features
 
-- **All Figma file types** — Figma Design, FigJam, and Slides files are backed up as native
-  `.fig` copies:<br>
+- **All Figma file types** — every type is backed up in its own native format: Figma Design as
+  `.fig`, FigJam as `.jam`, and Slides as `.deck`:<br>
   <img src="docs/screenshots/figma-file-design.png" height="20" alt="Figma Design files">
   <img src="docs/screenshots/figma-file-figjam.png" height="20" alt="FigJam files">
   <img src="docs/screenshots/figma-file-slides.png" height="20" alt="Figma Slides files">
@@ -92,7 +92,7 @@ else. Problems installing or signing in? See
 | What | Where |
 | --- | --- |
 | Team / folder backups | `~/Downloads/Fig Backup/<Team>/<Folder>/…` |
-| Single files | `~/Downloads/<name>.fig` — duplicates become `name(1).fig`, `name(2).fig`, … |
+| Single files | `~/Downloads/<name>.fig` — `.jam` for FigJam and `.deck` for Slides; duplicates become `name(1)`, `name(2)`, … |
 
 If Figma restricts subfolder listing for your region (HTTP 451), the app warns you that the backup
 may be incomplete.
