@@ -27,15 +27,11 @@ anywhere, and your token stays on your machine.
 
 ## Screenshots
 
-<!-- Drop the PNGs into docs/screenshots/ with these exact names and they render automatically:
-     setup-wizard.png · browse-select.png · download-manager.png · dark-mode.png
-     The app window is 960×700 — PNG at 2× (1920×1400) looks crispest. -->
-
-| Setup wizard | Select mode & the backup pill |
+| Setup wizard | Folders & files |
 | --- | --- |
-| <img src="docs/screenshots/setup-wizard.png" alt="Setup wizard — access token step"> | <img src="docs/screenshots/browse-select.png" alt="Browsing a team in Select mode with the floating backup pill"> |
+| <img src="docs/screenshots/setup-wizard.png" alt="Setup wizard — browser sign-in step"> | <img src="docs/screenshots/browse-light.png" alt="Browsing a team's folders and files"> |
 | **Download manager** | **Dark mode** |
-| <img src="docs/screenshots/download-manager.png" alt="Download manager popover with a finished backup"> | <img src="docs/screenshots/dark-mode.png" alt="Browse view with the dark theme"> |
+| <img src="docs/screenshots/download-manager.png" alt="Download manager popover with a running queue"> | <img src="docs/screenshots/dark-mode.png" alt="Browse view with the dark theme"> |
 
 ## Why?
 
@@ -46,6 +42,11 @@ team, choose folders and files, and keep working while the backup runs in the ba
 
 ## Features
 
+- **All Figma file types** — Figma Design, FigJam, and Slides files are backed up as native
+  `.fig` copies:<br>
+  <img src="docs/screenshots/figma-file-design.png" height="20" alt="Figma Design files">
+  <img src="docs/screenshots/figma-file-figjam.png" height="20" alt="FigJam files">
+  <img src="docs/screenshots/figma-file-slides.png" height="20" alt="Figma Slides files">
 - **Two-step setup wizard** — *Access token → Browser sign-in*. The one-time browser sign-in is a
   hard requirement for native `.fig` exports, so it is part of setup ("I'll sign in later" works
   too; the first backup routes you back if needed). Re-run it anytime via *Settings → Redo setup*.
