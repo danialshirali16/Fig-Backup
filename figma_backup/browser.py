@@ -5,12 +5,14 @@ import base64
 import re
 import os
 import subprocess
+import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
 from playwright.sync_api import TimeoutError as PlaywrightTimeout
 from playwright.sync_api import sync_playwright
 from playwright._impl._driver import compute_driver_executable
+from playwright._impl._errors import TargetClosedError
 
 from .core import ArchiveIndex, BrowserAuthError, FigmaError, SUPPORT, merge_teams, verify_fig
 
@@ -22,27 +24,35 @@ class Browser:
         self.context = None
         self.page = None
         self.headless = True
+        self.use_headless_shell = False
 
     def open(self, headless: bool = True) -> None:
         self.close()
-        # Playwright's PyInstaller hook otherwise points to a read-only .app/.local-browsers.
-        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(Path.home() / "Library/Caches/ms-playwright")
+        # Keep browser downloads in a writable per-user cache outside the frozen app.
+        if sys.platform == "win32":
+            browser_cache = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData/Local")) / "ms-playwright"
+        else:
+            browser_cache = Path.home() / "Library/Caches/ms-playwright"
+        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(browser_cache)
         if self.playwright is None:
             self.playwright = sync_playwright().start()
         self.support.mkdir(parents=True, exist_ok=True, mode=0o700)
         browser_binary = Path(self.playwright.chromium.executable_path)
         if not browser_binary.exists():
             self._install_chromium()
-        options = dict(channel="chromium", headless=headless, accept_downloads=True,
+        options = dict(headless=headless, accept_downloads=True,
                        viewport={"width": 1400, "height": 900})
+        if not headless or not self.use_headless_shell:
+            options["channel"] = "chromium"
         if headless:
             version = subprocess.run([str(browser_binary), "--version"],
                                      check=True, capture_output=True, text=True).stdout
             match = re.search(r"(\d+\.\d+\.\d+\.\d+)", version)
             if not match:
                 raise FigmaError("Could not determine the Chromium version")
+            platform_agent = "Windows NT 10.0; Win64; x64" if sys.platform == "win32" else "Macintosh; Intel Mac OS X 10_15_7"
             options["user_agent"] = (
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                f"Mozilla/5.0 ({platform_agent}) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 f"Chrome/{match.group(1)} Safari/537.36"
             )
@@ -88,6 +98,10 @@ class Browser:
         if self.playwright is not None:
             self.playwright.stop()
             self.playwright = None
+
+    def recover_from_crash(self) -> None:
+        self.stop()
+        self.use_headless_shell = True
 
     def open_sign_in(self) -> None:
         self.open(headless=False)
@@ -235,6 +249,8 @@ class Browser:
             page.get_by_text(re.compile("save local copy", re.I)).first.wait_for(state="visible", timeout=5000)
             page.keyboard.press("Enter")
             return
+        except TargetClosedError:
+            raise
         except Exception:
             page.keyboard.press("Escape")
         for control in (
@@ -245,6 +261,8 @@ class Browser:
             try:
                 control.click(timeout=3500)
                 break
+            except TargetClosedError:
+                raise
             except Exception:
                 continue
         else:
@@ -252,6 +270,8 @@ class Browser:
         file_menu = page.get_by_role("menuitem", name=re.compile(r"^File\b", re.I)).first
         try:
             file_menu.hover(timeout=6000)
+        except TargetClosedError:
+            raise
         except Exception:
             page.get_by_text("File", exact=True).last.hover(timeout=6000)
         save = page.get_by_role("menuitem", name=re.compile("Save local copy", re.I)).last
@@ -260,6 +280,8 @@ class Browser:
         except PlaywrightTimeout:
             try:
                 file_menu.click(timeout=6000)
+            except TargetClosedError:
+                raise
             except Exception:
                 pass
             save = page.get_by_text("Save local copy", exact=True).last
@@ -290,6 +312,8 @@ class Browser:
             with self.page.expect_download(timeout=480000) as download_info:
                 self._save_local_copy()
             download = download_info.value
+        except TargetClosedError:
+            raise
         except Exception as error:
             screenshot = self.support / f"download-error-{file['key']}.png"
             try:

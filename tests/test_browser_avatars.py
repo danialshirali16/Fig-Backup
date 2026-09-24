@@ -1,6 +1,7 @@
 import base64
 import unittest
 from types import SimpleNamespace
+from playwright._impl._errors import TargetClosedError
 
 from figma_backup.browser import Browser
 
@@ -36,6 +37,18 @@ class AvatarTests(unittest.TestCase):
             {'id': '1', 'name': 'Design', 'avatar': 'https://elsewhere.example/avatar.png'}
         ], saved)
         self.assertEqual(teams[0]['avatar'], saved[0]['avatar'])
+
+
+class BrowserRecoveryTests(unittest.TestCase):
+    def test_closed_page_is_not_swallowed_by_menu_fallback(self):
+        browser = Browser()
+
+        def closed(*_args, **_kwargs):
+            raise TargetClosedError('Target page, context or browser has been closed')
+
+        browser.page = SimpleNamespace(keyboard=SimpleNamespace(press=closed))
+        with self.assertRaises(TargetClosedError):
+            browser._save_local_copy()
 
 
 if __name__ == '__main__':

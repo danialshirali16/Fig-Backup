@@ -1,4 +1,4 @@
-"""Mac desktop bridge. Browser work is confined to one worker thread."""
+"""Desktop bridge. Browser work is confined to one worker thread."""
 from __future__ import annotations
 
 import os
@@ -180,8 +180,8 @@ class Bridge:
                     try:
                         result = self.browser.download(file, index, progress)
                     except TargetClosedError:
-                        progress("retrying", "Chromium closed; trying again…")
-                        self.browser.stop()
+                        progress("retrying", "Chromium crashed; retrying with the headless browser…")
+                        self.browser.recover_from_crash()
                         result = self.browser.download(file, index, progress)
                     with self.lock:
                         item["status"] = result["status"]
@@ -212,7 +212,10 @@ class Bridge:
             self._set(running=False, finished=True, phase="error", message=str(error).splitlines()[0])
 
     def open_downloads(self) -> dict:
-        subprocess.Popen(["open", str(DOWNLOADS)])
+        if sys.platform == "win32":
+            os.startfile(str(DOWNLOADS))
+        else:
+            subprocess.Popen(["open", str(DOWNLOADS)])
         return {"opened": True}
 
     def open_destination(self) -> dict:
@@ -221,7 +224,11 @@ class Bridge:
         path = Path(destination).resolve()
         if not path.is_relative_to(DOWNLOADS.resolve()):
             raise FigmaError("The backup destination is outside Downloads")
-        subprocess.Popen(["open", str(path if path.exists() else DOWNLOADS)])
+        target = path if path.exists() else DOWNLOADS
+        if sys.platform == "win32":
+            os.startfile(str(target))
+        else:
+            subprocess.Popen(["open", str(target)])
         return {"opened": True}
 
     def shutdown(self, grace_seconds: float = 3.0, exit_now=os._exit) -> None:
@@ -262,6 +269,60 @@ def configure_titlebar(window) -> None:
         AppKit.NSColor.clearColor()
     )
 
+def position_titlebar_buttons(window) -> None:
+    """Position traffic lights after AppKit has completed the window layout."""
+    from PyObjCTools import AppHelper
+
+    AppHelper.callAfter(_position_titlebar_buttons, window)
+
+
+def refresh_titlebar_buttons(window, *_size) -> None:
+    if getattr(window, "_titlebar_button_insets", None) is not None:
+        position_titlebar_buttons(window)
+
+
+def _position_titlebar_buttons(window) -> None:
+    import AppKit
+
+    native = window.native
+    kinds = (
+        AppKit.NSWindowCloseButton,
+        AppKit.NSWindowMiniaturizeButton,
+        AppKit.NSWindowZoomButton,
+    )
+    insets = getattr(window, "_titlebar_button_insets", None)
+    if insets is None:
+        insets = {}
+        for kind in kinds:
+            button = native.standardWindowButton_(kind)
+            frame = button.frame()
+            parent = button.superview()
+            bounds = parent.bounds()
+            top = (
+                frame.origin.y - bounds.origin.y
+                if parent.isFlipped()
+                else bounds.origin.y + bounds.size.height - frame.origin.y - frame.size.height
+            )
+            # Preserve AppKit's spacing between buttons, with a larger inset
+            # to match the taller web header.
+            insets[kind] = (frame.origin.x - bounds.origin.x + 6, top + 8)
+        window._titlebar_button_insets = insets
+
+    for kind in kinds:
+        button = native.standardWindowButton_(kind)
+        frame = button.frame()
+        parent = button.superview()
+        bounds = parent.bounds()
+        left, top = insets[kind]
+        y = (
+            bounds.origin.y + top
+            if parent.isFlipped()
+            else bounds.origin.y + bounds.size.height - top - frame.size.height
+        )
+        button.setFrameOrigin_(
+            AppKit.NSMakePoint(bounds.origin.x + left, y)
+        )
+
 
 def main() -> None:
     root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
@@ -273,9 +334,14 @@ def main() -> None:
     window = webview.create_window("Fig Backup", str(html), js_api=bridge,
                                    width=960, height=700, min_size=(640, 520),
                                    background_color="#f5f5f5")
-    window.events.before_show += configure_titlebar
+    if sys.platform == "darwin":
+        window.events.before_show += configure_titlebar
+        window.events.shown += position_titlebar_buttons
+        window.events.resized += refresh_titlebar_buttons
+        window.events.restored += refresh_titlebar_buttons
     window.events.closed += bridge.shutdown
-    webview.start(gui="cocoa", debug="--debug" in sys.argv)
+    webview.start(gui="edgechromium" if sys.platform == "win32" else "cocoa",
+                  debug="--debug" in sys.argv)
 
 
 if __name__ == "__main__":

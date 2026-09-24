@@ -81,6 +81,10 @@ class BridgeTests(unittest.TestCase):
             def stop(self):
                 self.stopped = True
 
+            def recover_from_crash(self):
+                self.stop()
+                self.use_headless_shell = True
+
         browser = ClosingBrowser()
         bridge = self.make_bridge(browser)
         with patch('figma_backup.app.ArchiveIndex'):
@@ -89,6 +93,7 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(bridge.status()['saved'], 1)
         self.assertEqual(browser.calls, 2)
         self.assertTrue(browser.stopped)
+        self.assertTrue(browser.use_headless_shell)
 
     def test_api_403_fails_file_but_queue_continues(self):
         class RestrictedClient(FigmaFilesClient):

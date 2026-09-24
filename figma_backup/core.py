@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 import time
 import unicodedata
 from pathlib import Path
@@ -13,8 +14,13 @@ from urllib.parse import quote
 import requests
 
 
-SUPPORT = Path.home() / "Library/Application Support/Figma Fig Downloader"
-APP_SUPPORT = Path.home() / "Library/Application Support/Fig Backup"
+if sys.platform == "win32":
+    _local_app_data = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData/Local"))
+    SUPPORT = _local_app_data / "Figma Fig Downloader"
+    APP_SUPPORT = _local_app_data / "Fig Backup"
+else:
+    SUPPORT = Path.home() / "Library/Application Support/Figma Fig Downloader"
+    APP_SUPPORT = Path.home() / "Library/Application Support/Fig Backup"
 DOWNLOADS = Path.home() / "Downloads"
 
 

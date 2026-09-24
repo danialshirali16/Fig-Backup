@@ -31,7 +31,7 @@ Shown when there is no stored token or setup was never completed. Two steps with
 
 ## Teams
 
-Inset list of discovered teams (team avatar, name, chevron) with count. Avatars discovered in the
+Borderless list of discovered teams (team avatar, name, chevron). Avatars discovered in the
 Figma team switcher are stored locally for display in the app; teams without an available image show
 their initial. *Refresh* re-scrapes the team switcher. If the browser session is missing,
 a banner offers *Open sign-in window* (same as wizard step 2).
@@ -49,7 +49,7 @@ trailing edge depend on context:
 | Inside a folder, not selecting | *Back up this folder* + *Select* |
 | Select mode | tri-state **Select-all** checkbox + “N of M selected” + *Done* |
 
-Content is one inset card list. Folders appear first in alphabetical order, followed by files in
+Content uses the same borderless, rounded row style as Teams. Folders appear first in alphabetical order, followed by files in
 alphabetical order. There are no section headers or download-location note.
 
 - **Not selecting** — clicking a folder row opens it (chevron affordance); per-row buttons offer

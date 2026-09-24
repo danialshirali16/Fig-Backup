@@ -1,17 +1,21 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Popover as PopoverPrimitive } from 'radix-ui'
+import { toast } from 'sonner'
 import {
   AlertTriangle, Check, CheckCircle2, ChevronRight, Clock, Download, ExternalLink,
   Folder, Loader2, PenTool, RefreshCw, RotateCcw, Settings as SettingsIcon,
   Square, X,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import { Card } from '@/components/ui/card'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Toaster } from '@/components/ui/sonner'
 import { translate } from './i18n'
+import { downloadFailureDescription } from './download-errors'
 
 const DONE_STATES = ['saved', 'exists', 'renamed']
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms))
@@ -34,44 +38,6 @@ function Ring({ value, label, name }) {
       </svg>
       <span aria-hidden="true" className="absolute inset-0 grid place-items-center text-[10px] font-bold tabular-nums">{label}%</span>
     </span>
-  )
-}
-
-/* Tri-state select-all (role=checkbox + aria-checked="mixed"; 24px hit target) */
-function TriCheckbox({ state, onClick, label }) {
-  return (
-    <button
-      type="button"
-      role="checkbox"
-      aria-checked={state === 'on' ? true : state === 'half' ? 'mixed' : false}
-      aria-label={label}
-      onClick={onClick}
-      className={
-        'grid size-6 place-items-center rounded-md border outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background ' +
-        (state === 'off' ? 'border-input bg-background hover:border-primary/60' : 'border-primary bg-primary text-primary-foreground hover:bg-primary/90')
-      }
-    >
-      {state === 'on' && <Check className="size-3.5" />}
-      {state === 'half' && <span className="h-0.5 w-2.5 rounded-full bg-current" />}
-    </button>
-  )
-}
-
-function RowCheckbox({ checked, label, onToggle }) {
-  return (
-    <button
-      type="button"
-      role="checkbox"
-      aria-checked={checked}
-      aria-label={label}
-      onClick={onToggle}
-      className={
-        'grid size-6 shrink-0 place-items-center rounded-md border outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background ' +
-        (checked ? 'border-primary bg-primary text-primary-foreground' : 'border-input bg-background hover:border-primary/60')
-      }
-    >
-      {checked && <Check className="size-3.5" />}
-    </button>
   )
 }
 
@@ -110,7 +76,6 @@ function App() {
   const [loginOpen, setLoginOpen] = useState(false)
   const [busy, setBusy] = useState('')
   const [error, setError] = useState('')
-  const [notice, setNotice] = useState('')
   const [progress, setProgress] = useState({ running: false, phase: 'idle', items: [], total: 0, saved: 0, existing: 0, skipped: 0, failed: 0, message: '', destination: '', finished: false })
   const [selectMode, setSelectMode] = useState(false)
   const [selection, setSelection] = useState({}) // teamId -> { folders: [], files: [] }
@@ -187,7 +152,7 @@ function App() {
   }, [queueOpen, selectMode])
 
   async function call(label, action) {
-    setBusy(label); setError(''); setNotice('')
+    setBusy(label); setError(''); toast.dismiss('app-notice')
     try { return await action() }
     catch (err) { setError(firstLine(err)); return null }
     finally { setBusy('') }
@@ -219,7 +184,7 @@ function App() {
     setHasToken(true)
     setToken('')
     if (view === 'settings') {
-      setNotice(t('tokenSavedNotice'))
+      toast.success(t('tokenSavedNotice'), { id: 'app-notice' })
       if (settingsReturn === 'wizard') setWizardStep('signin')
       return
     }
@@ -254,7 +219,7 @@ function App() {
     setTeam(value); setFolders(result.folders || []); setFolder(null); setTrail([]); setFiles([])
     setSelectMode(false)
     setView('browse')
-    if (result.legacy) setNotice(t('legacyNotice'))
+    if (result.legacy) toast.warning(t('legacyNotice'), { id: 'app-notice', duration: Infinity })
   }
 
   async function browseFolder(value, path = [...trail, value]) {
@@ -266,7 +231,7 @@ function App() {
     if (!result) return
     setFolder(value); setTrail(path); setFolders(result.children.folders || [])
     setFiles(result.fileResult.files || [])
-    if (result.children.unavailable || result.fileResult.unavailable) setNotice(t('folderRestricted'))
+    if (result.children.unavailable || result.fileResult.unavailable) toast.warning(t('folderRestricted'), { id: 'app-notice', duration: Infinity })
   }
 
   async function backTo(index) {
@@ -307,8 +272,8 @@ function App() {
       }))
     } else {
       updateSelection(cur => ({
-        folders: [...cur.folders.filter(f => !folders.some(v => v.id === f.id)), ...folders.filter(f => !folderSelected(f.id))],
-        files: [...cur.files.filter(f => !files.some(v => v.key === f.key)), ...files.filter(f => !fileSelected(f.key)).map(f => ({ key: f.key, name: f.name, folder }))],
+        folders: [...cur.folders.filter(f => !folders.some(v => v.id === f.id)), ...folders],
+        files: [...cur.files.filter(f => !files.some(v => v.key === f.key)), ...files.map(f => ({ key: f.key, name: f.name, folder }))],
       }))
     }
   }
@@ -356,7 +321,7 @@ function App() {
           await api.start_download({ team: item.team, ...sel })
           const s = await waitForRunEnd(runId)
           if (s.cancelled) break
-          if (s.warning) setNotice(backendWarning(s.warning))
+          if (s.warning) toast.warning(backendWarning(s.warning), { id: 'app-notice', duration: Infinity })
           if (s.phase === 'attention' || isSigninIssue(s.message)) {
             updateQueueItem(item.id, { status: 'failed', detail: t('interrupted') })
             routeToSignin()
@@ -364,7 +329,7 @@ function App() {
           }
           updateQueueItem(item.id, {
             status: s.phase === 'stopped' ? 'stopped' : s.phase === 'error' || s.failed > 0 ? 'failed' : 'done',
-            detail: s.phase === 'error' || s.failed > 0 ? firstLine(s.message) : '',
+            detail: s.phase === 'error' || s.failed > 0 ? downloadFailureDescription(s, item.name, t) : '',
           })
         } catch (err) {
           const msg = firstLine(err)
@@ -373,7 +338,7 @@ function App() {
             routeToSignin()
             break
           }
-          updateQueueItem(item.id, { status: 'failed', detail: msg })
+          updateQueueItem(item.id, { status: 'failed', detail: msg || t('downloadFailureFallback') })
         }
         if (stopAfterCurrentRef.current) break
       }
@@ -416,8 +381,8 @@ function App() {
     try { await api.stop_download() } catch { /* noop */ }
   }
 
-  function openSettings() { setSettingsReturn(view === 'settings' ? 'teams' : view); setQueueOpen(false); setView('settings'); setError(''); setNotice('') }
-  function leaveSettings() { setView(settingsReturn || 'teams'); setToken(''); setTokenError(''); setError(''); setNotice('') }
+  function openSettings() { setSettingsReturn(view === 'settings' ? 'teams' : view); setQueueOpen(false); setView('settings'); setError(''); toast.dismiss('app-notice') }
+  function leaveSettings() { setView(settingsReturn || 'teams'); setToken(''); setTokenError(''); setError(''); toast.dismiss('app-notice') }
   function redoSetup() { setVerifiedName(''); setView('wizard'); setWizardStep(hasToken ? 'signin' : 'token') }
 
   function startDownload(sel) {
@@ -594,7 +559,7 @@ function App() {
                 </span>
                 <span className="min-w-28 flex-1 break-words [overflow-wrap:anywhere]">
                   <span className="block text-sm font-medium leading-snug"><bdi>{item.name}</bdi></span>
-                  {item.detail && <span dir="auto" className="mt-0.5 block break-words text-xs leading-snug text-muted-foreground [overflow-wrap:anywhere]">{item.detail}</span>}
+                  {item.detail && <span dir="auto" className="mt-0.5 block whitespace-pre-line break-words text-xs leading-snug text-muted-foreground [overflow-wrap:anywhere]">{item.detail}</span>}
                 </span>
                 {(item.status === 'failed' || item.status === 'stopped') && (
                   <Button variant="outline" size="sm" onClick={() => retryItem(item.id)}><RotateCcw className="size-3" /> {t('retry')}</Button>
@@ -638,6 +603,7 @@ function App() {
   return (
     <div className={'flex min-h-screen flex-col' + (nativeMac ? ' native-mac-titlebar' : '')}>
       <a href="#main" className="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:m-3 focus:rounded-md focus:bg-background focus:px-3 focus:py-2 focus:shadow">{t('skipToContent')}</a>
+      <Toaster theme={appearance} position={rtl ? 'bottom-left' : 'bottom-right'} closeButton offset={16} />
 
       <header className="pywebview-drag-region sticky top-0 z-30 border-b bg-background/80 backdrop-blur">
         <div className="pywebview-drag-region app-header-inner mx-auto flex h-12 w-full max-w-[680px] items-center gap-2.5 px-4">
@@ -646,14 +612,14 @@ function App() {
               <Button variant="ghost" size="icon-lg" aria-label={t('back')} title={t('back')} onClick={leaveSettings}>
                 <ChevronRight className="size-4 rotate-180 rtl:rotate-0" aria-hidden="true" />
               </Button>
-              <span className="text-sm font-medium tracking-tight">{t('settingsTitle')}</span>
+              <span className="text-lg font-semibold tracking-tight">{t('settingsTitle')}</span>
             </div>
           ) : <span className="text-sm font-medium tracking-tight">Fig Backup</span>}
           <div className="ms-auto flex items-center gap-1">
             {view !== 'wizard' && view !== 'settings' && (
               <PopoverPrimitive.Root open={queueOpen} onOpenChange={setQueueOpen}>
                 <PopoverPrimitive.Trigger asChild>
-                  <Button variant="ghost" size="icon-lg" aria-label={t('downloadManagerTitle')} title={t('downloadManagerTitle')} aria-expanded={queueOpen} aria-controls="download-manager">
+                  <Button variant="ghost" size="icon" aria-label={t('downloadManagerTitle')} title={t('downloadManagerTitle')} aria-expanded={queueOpen} aria-controls="download-manager">
                     <Download className="size-4" aria-hidden="true" />
                   </Button>
                 </PopoverPrimitive.Trigger>
@@ -665,7 +631,7 @@ function App() {
               </PopoverPrimitive.Root>
             )}
             {view !== 'wizard' && view !== 'settings' && (
-              <Button variant="ghost" size="icon-lg" aria-label={t('settings')} title={t('settings')} onClick={openSettings}>
+              <Button variant="ghost" size="icon" aria-label={t('settings')} title={t('settings')} onClick={openSettings}>
                 <SettingsIcon className="size-4" aria-hidden="true" />
               </Button>
             )}
@@ -673,7 +639,7 @@ function App() {
         </div>
       </header>
 
-      <main id="main" className={'mx-auto w-full max-w-[680px] flex-1 px-4 pt-7 ' + (pillVisible ? 'pb-28' : 'pb-10')}>
+      <main id="main" className={'mx-auto w-full max-w-[680px] flex-1 ' + (view === 'wizard' ? 'px-4 pt-7 pb-10' : 'px-2 pt-4 ' + (pillVisible ? 'pb-28' : 'pb-8'))}>
         {error && (
           <div role="alert" className="mb-4 flex items-start gap-2.5 rounded-lg border border-[var(--figma-color-border-danger)] bg-[var(--figma-color-bg-danger-tertiary)] px-3.5 py-2.5 text-sm text-destructive">
             <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
@@ -681,38 +647,20 @@ function App() {
             <button onClick={() => setError('')} aria-label={t('close')} className="grid size-8 shrink-0 place-items-center rounded-md hover:bg-destructive/15 focus-visible:outline-2 focus-visible:outline-ring"><X className="size-3.5" /></button>
           </div>
         )}
-        {notice && (
-          <div role="status" className="mb-4 flex items-start gap-2.5 rounded-lg border border-primary/25 bg-primary/10 px-3.5 py-2.5 text-sm text-brand-text">
-            <span className="min-w-0 flex-1 break-words">{notice}</span>
-            <button onClick={() => setNotice('')} aria-label={t('close')} className="grid size-8 shrink-0 place-items-center rounded-md hover:bg-primary/15 focus-visible:outline-2 focus-visible:outline-ring"><X className="size-3.5" /></button>
-          </div>
-        )}
         {!ready ? (
           <div role="status" className="flex items-center justify-center gap-2.5 py-24 text-muted-foreground"><Spinner /> {t('loading')}</div>
         ) : view === 'wizard' ? wizard : <>
           {view !== 'settings' && <div className="mb-5">
-            {view === 'browse' && (
-              <nav className="mb-1.5 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground" aria-label={t('breadcrumb')}>
-                <button className="rounded font-medium text-brand-text hover:underline" onClick={() => setView('teams')}>{t('teamsTitle')}</button>
-                {trail.length > 0 && <><span aria-hidden="true">/</span><button className="rounded font-medium text-brand-text hover:underline" onClick={() => backTo(-1)}><bdi>{team?.name}</bdi></button></>}
-                {trail.slice(0, -1).map((item, index) => (
-                  <span key={item.id} className="flex items-center gap-1.5">
-                    <span aria-hidden="true">/</span>
-                    <button className="rounded font-medium text-brand-text hover:underline" onClick={() => backTo(index)}><bdi>{item.name}</bdi></button>
-                  </span>
-                ))}
-              </nav>
-            )}
-            <div className="flex flex-wrap items-center justify-between gap-2.5">
+            <div className="flex flex-wrap items-center justify-between gap-2.5 px-3">
               {view === 'browse' ? (
                 <div className="flex min-w-0 items-center gap-2">
                   <Button variant="ghost" size="icon-sm" aria-label={t('back')} onClick={() => (trail.length > 1 ? backTo(trail.length - 2) : trail.length ? backTo(-1) : setView('teams'))}>
                     <ChevronRight className="rotate-180 rtl:rotate-0" />
                   </Button>
-                  <h1 tabIndex="-1" className="min-w-0 break-words text-xl font-bold leading-tight tracking-tight text-balance sm:text-2xl [overflow-wrap:anywhere]"><bdi>{folder?.name || team?.name}</bdi></h1>
+                  <h1 tabIndex="-1" className="min-w-0 break-words text-lg font-semibold leading-tight tracking-tight text-balance [overflow-wrap:anywhere]"><bdi>{folder?.name || team?.name}</bdi></h1>
                 </div>
               ) : view === 'teams' ? (
-                <h1 tabIndex="-1" className="text-2xl font-bold tracking-tight">{t('teamsTitle')}</h1>
+                <p className="text-lg font-semibold text-foreground">{t('teamsDescription')}</p>
               ) : null}
               <div className="flex flex-wrap items-center gap-2">
                 {view === 'teams' && (
@@ -727,7 +675,7 @@ function App() {
                 )}
                 {view === 'browse' && inSelect && (
                   <>
-                    <TriCheckbox state={allState} onClick={onSelectAll} label={t('selectAll')} />
+                    <Checkbox checked={allState === 'half' ? 'indeterminate' : allState === 'on'} onCheckedChange={onSelectAll} aria-label={t('selectAll')} />
                     <span className="text-xs font-semibold tabular-nums text-muted-foreground" role="status">
                       {t('ofSelected', { count: selCount, total: folders.length + files.length })}
                     </span>
@@ -745,14 +693,13 @@ function App() {
                 )}
               </div>
             </div>
-            {view === 'teams' && <p className="mt-1 text-sm text-muted-foreground">{t('teamsDescription')}</p>}
           </div>}
 
           {view === 'settings' && (
-            <Card className="w-full gap-0 py-1">
-              <div className="flex flex-wrap items-center justify-between gap-4 border-b px-5 py-4">
+            <div className="w-full">
+              <div className="flex flex-wrap items-center justify-between gap-4 rounded-md px-3 py-2.5">
                 <Label htmlFor="setting-language">{t('language')}</Label>
-                <Select dir={rtl ? 'rtl' : 'ltr'} value={language} onValueChange={async value => { if (await savePrefs({ language: value })) setNotice(translate(value, 'savedNotice')) }}>
+                <Select dir={rtl ? 'rtl' : 'ltr'} value={language} onValueChange={async value => { if (await savePrefs({ language: value })) toast.success(translate(value, 'savedNotice'), { id: 'app-notice' }) }}>
                   <SelectTrigger id="setting-language" className="w-40 max-w-full"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="en">English</SelectItem>
@@ -760,9 +707,9 @@ function App() {
                   </SelectContent>
                 </Select>
               </div>
-              <div className="flex flex-wrap items-center justify-between gap-4 border-b px-5 py-4">
+              <div className="flex flex-wrap items-center justify-between gap-4 rounded-md px-3 py-2.5">
                 <Label htmlFor="setting-theme">{t('theme')}</Label>
-                <Select dir={rtl ? 'rtl' : 'ltr'} value={preferences.theme} onValueChange={async value => { if (await savePrefs({ theme: value })) setNotice(t('savedNotice')) }}>
+                <Select dir={rtl ? 'rtl' : 'ltr'} value={preferences.theme} onValueChange={async value => { if (await savePrefs({ theme: value })) toast.success(t('savedNotice'), { id: 'app-notice' }) }}>
                   <SelectTrigger id="setting-theme" className="w-40 max-w-full"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="system">{t('system')}</SelectItem>
@@ -771,9 +718,9 @@ function App() {
                   </SelectContent>
                 </Select>
               </div>
-              <div className="flex flex-wrap items-start justify-between gap-4 border-b px-5 py-4">
+              <div className="flex flex-wrap items-start justify-between gap-4 rounded-md px-3 py-2.5">
                 <div>
-                  <h2 className="text-sm font-semibold">{t('tokenSettings')}</h2>
+                  <h2 className="text-sm font-medium">{t('tokenSettings')}</h2>
                 </div>
                 <form onSubmit={saveTokenContinue} className="grid w-full max-w-xs gap-2.5">
                   <Label htmlFor="token-settings" className="sr-only">{t('newToken')}</Label>
@@ -782,24 +729,20 @@ function App() {
                   <Button type="submit" className="justify-self-end" size="sm" disabled={!!busy}>{busy === 'token' ? <Spinner /> : null} {t(hasToken ? 'replaceToken' : 'newToken')}</Button>
                 </form>
               </div>
-              <div className="flex flex-wrap items-center justify-between gap-4 px-5 py-4">
+              <div className="flex flex-wrap items-center justify-between gap-4 rounded-md px-3 py-2.5">
                 <div>
-                  <h2 className="text-sm font-semibold">{t('redoSetup')}</h2>
+                  <h2 className="text-sm font-medium">{t('redoSetup')}</h2>
                   <p className="mt-1 text-xs text-muted-foreground">{t('signInTitle')}</p>
                 </div>
                 <Button variant="outline" size="sm" onClick={redoSetup}><RotateCcw className="size-3.5" /> {t('redoSetup')}</Button>
               </div>
-            </Card>
+            </div>
           )}
 
           {view === 'teams' && (
-            <Card className="w-full gap-0 py-1">
-              <div className="flex items-center justify-between border-b px-5 py-3.5">
-                <h2 className="text-sm font-semibold">{t('teamsTitle')}</h2>
-                <span className="text-xs tabular-nums text-muted-foreground">{countCopy('teamCount', teams.length)}</span>
-              </div>
+            <div className="w-full">
               {authRequired && (
-                <div className="flex flex-wrap items-center justify-between gap-3 border-b bg-primary/5 px-5 py-3.5">
+                <div className="flex flex-wrap items-center justify-between gap-3 bg-primary/5 px-3 py-3.5">
                   <div>
                     <p className="text-sm font-semibold text-brand-text">{t('signInTitle')}</p>
                     <p className="mt-0.5 max-w-md text-xs leading-relaxed text-muted-foreground">{t('signInDescription')}</p>
@@ -807,25 +750,25 @@ function App() {
                   <Button size="sm" onClick={() => openWizard('signin')}><ExternalLink className="size-3.5" /> {t('openSignIn')}</Button>
                 </div>
               )}
-              <div className="divide-y">
+              <div>
                 {teams.map(value => (
-                  <button key={value.id} className="flex w-full items-center gap-3 px-5 py-3 text-start transition-colors hover:bg-accent/60 disabled:opacity-50" onClick={() => chooseTeam(value)} disabled={!!busy}>
+                  <button key={value.id} className="flex w-full items-center gap-3 rounded-md px-3 py-2.5 text-start transition-colors hover:bg-accent/60 disabled:opacity-50" onClick={() => chooseTeam(value)} disabled={!!busy}>
                     <TeamAvatar team={value} />
                     <span className="min-w-0 flex-1 break-words text-sm font-medium leading-snug [overflow-wrap:anywhere]"><bdi>{value.name}</bdi></span>
                     <ChevronRight className="size-4 shrink-0 text-muted-foreground rtl:-scale-x-100" aria-hidden="true" />
                   </button>
                 ))}
               </div>
-              {!teams.length && <div className="px-5 py-8 text-center text-sm text-muted-foreground">{t('noTeams')}</div>}
-            </Card>
+              {!teams.length && <div className="px-3 py-8 text-center text-sm text-muted-foreground">{t('noTeams')}</div>}
+            </div>
           )}
 
           {view === 'browse' && (
-            <Card className="w-full gap-0 py-1">
-              <div className="divide-y">
+            <div className="w-full">
+              <div>
                 {sortedFolders.map(value => inSelect ? (
-                  <div key={value.id} className={'flex flex-wrap items-center gap-3 px-5 py-3 ' + (folderSelected(value.id) ? 'bg-primary/5' : '')}>
-                    <RowCheckbox checked={folderSelected(value.id)} label={t('ariaSelectItem', { name: value.name })} onToggle={() => toggleFolder(value)} />
+                  <div key={value.id} className={'flex flex-wrap items-center gap-3 rounded-md px-3 py-2.5 ' + (folderSelected(value.id) ? 'bg-primary/5' : '')}>
+                    <Checkbox checked={folderSelected(value.id)} onCheckedChange={() => toggleFolder(value)} aria-label={t('ariaSelectItem', { name: value.name })} className="shrink-0" />
                     <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground"><Folder className="size-4" /></span>
                     <span className="min-w-28 flex-1 break-words text-sm font-medium leading-snug [overflow-wrap:anywhere]"><bdi>{value.name}</bdi></span>
                     <button className="flex flex-none items-center gap-1 rounded px-1.5 py-1 text-xs font-semibold text-brand-text hover:underline" onClick={() => browseFolder(value)} disabled={!!busy} aria-label={t('ariaOpen', { name: value.name })}>
@@ -833,23 +776,29 @@ function App() {
                     </button>
                   </div>
                 ) : (
-                  <div key={value.id} className="flex flex-wrap items-center gap-3 px-5 py-3 transition-colors hover:bg-accent/40">
-                    <button className="flex min-w-44 flex-1 items-center gap-3 text-start" onClick={() => browseFolder(value)} disabled={!!busy} aria-label={t('ariaOpen', { name: value.name })}>
+                  <div key={value.id} className="flex flex-wrap items-center gap-3 rounded-md px-3 py-2.5 transition-colors hover:bg-accent/60">
+                    <button className="flex min-w-0 flex-1 items-center gap-3 text-start" onClick={() => browseFolder(value)} disabled={!!busy} aria-label={t('ariaOpen', { name: value.name })}>
                       <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground"><Folder className="size-4" /></span>
                       <span className="min-w-0 flex-1 break-words text-sm font-medium leading-snug [overflow-wrap:anywhere]"><bdi>{value.name}</bdi></span>
-                      <ChevronRight className="size-4 shrink-0 text-muted-foreground rtl:-scale-x-100" aria-hidden="true" />
                     </button>
-                    <Button variant="outline" size="sm" onClick={() => startDownload({ scope: 'folder', folder: value })} disabled={!!busy} aria-label={t('ariaBackupItem', { name: value.name })}>{t('backup')}</Button>
+                    <div className="flex shrink-0 items-center gap-3">
+                      <Button variant="ghost" size="icon-sm" onClick={() => startDownload({ scope: 'folder', folder: value })} disabled={!!busy} aria-label={t('ariaBackupItem', { name: value.name })} title={t('ariaBackupItem', { name: value.name })}>
+                        <Download className="size-4" aria-hidden="true" />
+                      </Button>
+                      <Button variant="ghost" size="icon-sm" onClick={() => browseFolder(value)} disabled={!!busy} aria-label={t('ariaOpen', { name: value.name })} title={t('ariaOpen', { name: value.name })}>
+                        <ChevronRight className="size-4 text-muted-foreground rtl:-scale-x-100" aria-hidden="true" />
+                      </Button>
+                    </div>
                   </div>
                 ))}
                 {sortedFiles.map(value => inSelect ? (
-                  <div key={value.key} className={'flex flex-wrap items-center gap-3 px-5 py-3 ' + (fileSelected(value.key) ? 'bg-primary/5' : '')}>
-                    <RowCheckbox checked={fileSelected(value.key)} label={t('ariaSelectItem', { name: value.name })} onToggle={() => toggleFile(value)} />
+                  <div key={value.key} className={'flex flex-wrap items-center gap-3 rounded-md px-3 py-2.5 ' + (fileSelected(value.key) ? 'bg-primary/5' : '')}>
+                    <Checkbox checked={fileSelected(value.key)} onCheckedChange={() => toggleFile(value)} aria-label={t('ariaSelectItem', { name: value.name })} className="shrink-0" />
                     <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-brand-text"><PenTool className="size-4" /></span>
                     <span className="min-w-28 flex-1 break-words text-sm font-medium leading-snug [overflow-wrap:anywhere]"><bdi>{value.name}</bdi></span>
                   </div>
                 ) : (
-                  <div key={value.key} className="flex flex-wrap items-center gap-3 px-5 py-3 transition-colors hover:bg-accent/40">
+                  <div key={value.key} className="flex flex-wrap items-center gap-3 rounded-md px-3 py-2.5 transition-colors hover:bg-accent/60">
                     <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-brand-text"><PenTool className="size-4" /></span>
                     <span className="min-w-28 flex-1 break-words text-sm font-medium leading-snug [overflow-wrap:anywhere]"><bdi>{value.name}</bdi></span>
                     <Button variant="outline" size="sm" onClick={() => startDownload({ scope: 'file', folder, file_key: value.key, name: value.name })} disabled={!!busy} aria-label={t('ariaDownloadItem', { name: value.name })}>
@@ -858,8 +807,8 @@ function App() {
                   </div>
                 ))}
               </div>
-              {!folders.length && !files.length && <div className="px-5 py-8 text-center text-sm leading-relaxed text-muted-foreground text-pretty">{t(folder ? 'emptyFolder' : 'emptyTeam')}</div>}
-            </Card>
+              {!folders.length && !files.length && <div className="px-3 py-8 text-center text-sm leading-relaxed text-muted-foreground text-pretty">{t(folder ? 'emptyFolder' : 'emptyTeam')}</div>}
+            </div>
           )}
         </>
       }
