@@ -1,15 +1,15 @@
 <p align="center">
-  <img src="docs/screenshots/icon-256.png" width="88" alt="آیکون Fig Backup">
+  <img src="../screenshots/icon-256.png" width="88" alt="آیکون Fig Backup">
 </p>
 
 <h1 align="center">Fig Backup</h1>
 
 <p align="center">
-  <a href="README.md">English</a> · <b>فارسی</b> · <a href="README.ar.md">العربية</a> · <a href="README.de.md">Deutsch</a> · <a href="README.es.md">Español</a> · <a href="README.fr.md">Français</a> · <a href="README.pt-BR.md">Português</a> · <a href="README.ru.md">Русский</a> · <a href="README.tr.md">Türkçe</a> · <a href="README.zh-CN.md">中文</a> · <a href="README.ja.md">日本語</a>
+  <a href="../../README.md">English</a> · <b>فارسی</b> · <a href="README.ar.md">العربية</a> · <a href="README.de.md">Deutsch</a> · <a href="README.es.md">Español</a> · <a href="README.fr.md">Français</a> · <a href="README.pt-BR.md">Português</a> · <a href="README.ru.md">Русский</a> · <a href="README.tr.md">Türkçe</a> · <a href="README.zh-CN.md">中文</a> · <a href="README.ja.md">日本語</a>
 </p>
 
 <p align="center">
-  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue"></a>
+  <a href="../../LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue"></a>
   <img alt="Platforms" src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows-blue">
   <a href="https://github.com/danialshirali16/Fig-Backup/actions/workflows/windows-build.yml?query=branch%3Awindows-build" title="وضعیت ساخت شاخهٔ windows-build"><img alt="Windows build (windows-build branch)" src="https://github.com/danialshirali16/Fig-Backup/actions/workflows/windows-build.yml/badge.svg?branch=windows-build"></a>
 </p>
@@ -19,7 +19,7 @@
 **نسخه‌های اصلی فایل‌های فیگما را روی رایانهٔ خودتان ذخیره کنید.** Fig Backup یک اپلیکیشن دسکتاپ رایگان برای مک‌های Apple Silicon و Windows 10/11 است. فایل‌های Figma Design را با فرمت `.fig`، فایل‌های FigJam را با فرمت `.jam` و فایل‌های Figma Slides را با فرمت `.deck` ذخیره می‌کند.
 
 <p align="center">
-  <img src="docs/screenshots/cover.png" alt="کاور Fig Backup — پشتیبان‌گیری بومی از فیگما، اپ دسکتاپ رایگان برای macOS و Windows" width="100%">
+  <img src="../screenshots/cover.png" alt="کاور Fig Backup — پشتیبان‌گیری بومی از فیگما، اپ دسکتاپ رایگان برای macOS و Windows" width="100%">
 </p>
 
 ## دانلود
@@ -33,7 +33,7 @@
 
 هر نسخه به‌همراه فایل `SHA256SUMS.txt` برای بررسی صحت هر دو فایل منتشر می‌شود.
 
-در نخستین اجرا، برنامه برای مرورگر پشتیبان‌گیری، Chromium را دانلود می‌کند (حدود ۱۵۰ مگابایت). نسخهٔ macOS امضای دیجیتال ندارد؛ ممکن است لازم باشد روی برنامه راست‌کلیک کنید و **Open** را انتخاب کنید. برای رفع مشکلات نصب، [راهنمای عیب‌یابی](docs/TROUBLESHOOTING.md) را ببینید.
+در نخستین اجرا، برنامه برای مرورگر پشتیبان‌گیری، Chromium را دانلود می‌کند (حدود ۱۵۰ مگابایت). نسخهٔ macOS امضای دیجیتال ندارد؛ ممکن است لازم باشد روی برنامه راست‌کلیک کنید و **Open** را انتخاب کنید. برای رفع مشکلات نصب، [راهنمای عیب‌یابی](../TROUBLESHOOTING.md) را ببینید.
 
 ## شروع سریع
 
@@ -46,9 +46,9 @@
 ## چه چیزی پشتیبان‌گیری می‌شود؟
 
 - فایل‌های Figma Design، FigJam و Slides با فرمت اصلی خودشان ذخیره می‌شوند:<br>
-  <img src="docs/screenshots/figma-file-design.png" height="20" alt="فایل‌های Figma Design">
-  <img src="docs/screenshots/figma-file-figjam.png" height="20" alt="فایل‌های FigJam">
-  <img src="docs/screenshots/figma-file-slides.png" height="20" alt="فایل‌های Figma Slides">
+  <img src="../screenshots/figma-file-design.png" height="20" alt="فایل‌های Figma Design">
+  <img src="../screenshots/figma-file-figjam.png" height="20" alt="فایل‌های FigJam">
+  <img src="../screenshots/figma-file-slides.png" height="20" alt="فایل‌های Figma Slides">
 - کل تیم را با یک کلیک پشتیبان بگیرید، یا با «انتخاب» پوشه‌ها و فایل‌های مشخص را برگزینید.
 - پشتیبان‌گیری پوشه‌ها، ساختار تیم و پوشه‌ها را حفظ می‌کند.
 - «دانلودها» پیشرفت زنده را نشان می‌دهد و می‌توانید موارد صف را دوباره امتحان کنید، متوقف سازید یا لغو کنید. انواع فایل پشتیبانی‌نشده رد می‌شوند و در درصد پیشرفت حساب نمی‌شوند.
@@ -63,31 +63,31 @@ REST API فیگما خروجی اصلی فایل‌ها را ارائه نمی�
 
 | راه‌اندازی اولیه | پوشه‌ها و فایل‌ها |
 | --- | --- |
-| <img src="docs/screenshots/setup-wizard.png" alt="راه‌اندازی اولیه — مرحلهٔ ورود به مرورگر"> | <img src="docs/screenshots/browse-light.png" alt="مرور پوشه‌ها و فایل‌های تیم"> |
+| <img src="../screenshots/setup-wizard.png" alt="راه‌اندازی اولیه — مرحلهٔ ورود به مرورگر"> | <img src="../screenshots/browse-light.png" alt="مرور پوشه‌ها و فایل‌های تیم"> |
 | **«دانلودها»** | **حالت تیره** |
-| <img src="docs/screenshots/download-manager.png" alt="پنجرهٔ دانلودها با صف در حال اجرا"> | <img src="docs/screenshots/dark-mode.png" alt="نمای مرور با تم تیره"> |
+| <img src="../screenshots/download-manager.png" alt="پنجرهٔ دانلودها با صف در حال اجرا"> | <img src="../screenshots/dark-mode.png" alt="نمای مرور با تم تیره"> |
 
 ## حریم خصوصی و امنیت
 
 پشتیبان‌ها روی رایانهٔ خودتان ذخیره می‌شوند. Fig Backup برای دسترسی به فایل‌هایتان با فیگما ارتباط می‌گیرد، اما فایل‌ها و توکن شما را به هیچ سروری — از جمله سرور Fig Backup — آپلود نمی‌کند و هیچ اطلاعاتی جمع‌آوری نمی‌کند.
 
-توکن در مسیر `~/Library/Application Support/Fig Backup/token.json` با سطح دسترسی `0600` ذخیره می‌شود. در keychain سیستم ذخیره نمی‌شود و رمزگذاری جداگانه‌ای هم ندارد — از حساب کاربری اشتراکی استفاده نکنید. برای اجرای اسکریپتی، متغیر محیطی `FIGMA_PAT` می‌تواند جایگزین آن شود. جزئیات کامل در [SECURITY.md](SECURITY.md). فقط با فایل‌هایی استفاده کنید که برای دسترسی به آن‌ها مجاز هستید.
+توکن در مسیر `~/Library/Application Support/Fig Backup/token.json` با سطح دسترسی `0600` ذخیره می‌شود. در keychain سیستم ذخیره نمی‌شود و رمزگذاری جداگانه‌ای هم ندارد — از حساب کاربری اشتراکی استفاده نکنید. برای اجرای اسکریپتی، متغیر محیطی `FIGMA_PAT` می‌تواند جایگزین آن شود. جزئیات کامل در [SECURITY.md](../../SECURITY.md). فقط با فایل‌هایی استفاده کنید که برای دسترسی به آن‌ها مجاز هستید.
 
 ## راهنما و مشارکت
 
-برای مشکلات نصب، ورود یا دانلود، [راهنمای عیب‌یابی](docs/TROUBLESHOOTING.md) را بخوانید. گزارش خطا و مشارکت خوش‌آمد است؛ [CONTRIBUTING.md](CONTRIBUTING.md) را ببینید.
+برای مشکلات نصب، ورود یا دانلود، [راهنمای عیب‌یابی](../TROUBLESHOOTING.md) را بخوانید. گزارش خطا و مشارکت خوش‌آمد است؛ [CONTRIBUTING.md](../../CONTRIBUTING.md) را ببینید.
 
-Fig Backup یک پروژهٔ مستقل است و وابستگی‌ای به Figma ندارد. تحت مجوز [MIT](LICENSE) منتشر شده است.
+Fig Backup یک پروژهٔ مستقل است و وابستگی‌ای به Figma ندارد. تحت مجوز [MIT](../../LICENSE) منتشر شده است.
 
 ## حمایت مالی
 
 اگر Fig Backup برایتان وقت می‌گیرد، می‌توانید توسعهٔ آن را با بیت‌کوین حمایت کنید:
 
 <p align="center">
-  <img src="docs/screenshots/donate-qr.png" alt="کد QR حمایت مالی با بیت‌کوین" width="180"><br>
+  <img src="../screenshots/donate-qr.png" alt="کد QR حمایت مالی با بیت‌کوین" width="180"><br>
   <code>bc1qf9dufwjyzp7u56lysgn2a0n2956y6xm5dzq6q4</code>
 </p>
 
 </div>
 
-> این فایل ترجمه‌ای است؛ نسخهٔ [انگلیسی](README.md) ملاک است.
+> این فایل ترجمه‌ای است؛ نسخهٔ [انگلیسی](../../README.md) ملاک است.
