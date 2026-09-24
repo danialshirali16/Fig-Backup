@@ -71,7 +71,8 @@ Grab the latest build from the
 
 On first launch the app downloads Chromium once (~150 MB) for its backup browser — an internet
 connection is required for that. Everything else runs locally: backups talk only to Figma, nothing
-else.
+else. Problems installing or signing in? See
+[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
 
 ## Getting started
 
@@ -147,15 +148,15 @@ prebuilt, so Node is only needed after UI changes.
   layout, backup-queue semantics.
 - [docs/UI.md](docs/UI.md) — screens and flows, selection model, design system (tokens,
   components), i18n and accessibility.
+- [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) — Gatekeeper, sign-in issues, the one-time
+  browser install, HTTP 451, and other common problems.
+- [SECURITY.md](SECURITY.md) — how to report vulnerabilities privately.
 
 ## Contributing
 
-Bug reports, fixes, and features are welcome — open an issue or a pull request. Development setup
-is above. Two conventions to know before you start:
-
-- UI strings live in `src/i18n.js`; every new key must be added to **all** language objects.
-- The built `dist/` is tracked in git on purpose (the `.command` launcher and packaged apps rely on
-  it) — after changing the UI, run `npm run build` and commit the result.
+Bug reports, fixes, and features are welcome — see
+[CONTRIBUTING.md](CONTRIBUTING.md) for the development setup and project conventions (run the
+tests, add UI strings to every language in `src/i18n.js`, and rebuild `dist/` after UI changes).
 
 ## License
 
