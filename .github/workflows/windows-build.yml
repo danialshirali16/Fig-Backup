@@ -31,7 +31,8 @@ jobs:
           python -m PyInstaller --noconfirm --windowed --onedir
           --name "Fig Backup" --icon app-icon-windows.ico
           --distpath release --workpath .build --specpath .build
-          --add-data "dist;dist" --collect-all playwright --collect-all webview
+          --add-data "$env:GITHUB_WORKSPACE\dist;dist"
+          --collect-all playwright --collect-all webview
           run_app.py
       - name: Create ZIP
         shell: pwsh
