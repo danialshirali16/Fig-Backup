@@ -21,6 +21,10 @@
 
 ---
 
+<p align="center">
+  <img src="docs/screenshots/cover.png" alt="Fig Backup cover — native .fig backups from Figma, free local desktop app for macOS and Windows" width="100%">
+</p>
+
 Fig Backup saves native copies of your Figma files — `.fig` for Design, `.jam` for FigJam,
 `.deck` for Slides — with your folder structure preserved, straight into your Downloads folder.
 It is a **local desktop app**: nothing is uploaded anywhere, and your token stays on your machine.
