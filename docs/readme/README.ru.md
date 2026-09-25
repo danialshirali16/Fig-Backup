@@ -26,8 +26,8 @@
 
 | Платформа | Загрузка |
 | --- | --- |
-| macOS (Apple Silicon) | [`Fig-Backup-macOS.zip`](https://github.com/danialshirali16/Fig-Backup/releases/latest) — имя файла содержит номер версии |
-| Windows 10/11 (x64) | [`Fig-Backup-Windows-x64.zip`](https://github.com/danialshirali16/Fig-Backup/releases/latest/download/Fig-Backup-Windows-x64.zip) — прямая загрузка |
+| macOS (Apple Silicon) | [Нажмите здесь](https://github.com/danialshirali16/Fig-Backup/releases/latest)|
+| Windows 10/11 (x64) | [Нажмите здесь](https://github.com/danialshirali16/Fig-Backup/releases/latest/download/Fig-Backup-Windows-x64.zip)|
 
 Каждый релиз также включает файл `SHA256SUMS.txt` с контрольными суммами обоих файлов.
 

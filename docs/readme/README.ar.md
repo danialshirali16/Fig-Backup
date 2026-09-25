@@ -28,8 +28,8 @@
 
 | المنصة | التنزيل |
 | --- | --- |
-| macOS (Apple Silicon) | [`Fig-Backup-macOS.zip`](https://github.com/danialshirali16/Fig-Backup/releases/latest) — يتضمن اسم الملف رقم الإصدار |
-| Windows 10/11 (x64) | [`Fig-Backup-Windows-x64.zip`](https://github.com/danialshirali16/Fig-Backup/releases/latest/download/Fig-Backup-Windows-x64.zip) — تنزيل مباشر |
+| macOS (Apple Silicon) | [انقر هنا](https://github.com/danialshirali16/Fig-Backup/releases/latest)|
+| Windows 10/11 (x64) | [انقر هنا](https://github.com/danialshirali16/Fig-Backup/releases/latest/download/Fig-Backup-Windows-x64.zip)|
 
 يأتي كل إصدار أيضًا مع ملف `SHA256SUMS.txt` يحتوي بصمات التحقق لكلا الملفين.
 

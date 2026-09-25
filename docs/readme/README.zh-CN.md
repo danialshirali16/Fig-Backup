@@ -26,8 +26,8 @@
 
 | 平台 | 下载 |
 | --- | --- |
-| macOS（Apple Silicon） | [`Fig-Backup-macOS.zip`](https://github.com/danialshirali16/Fig-Backup/releases/latest) — 文件名中包含版本号 |
-| Windows 10/11（x64） | [`Fig-Backup-Windows-x64.zip`](https://github.com/danialshirali16/Fig-Backup/releases/latest/download/Fig-Backup-Windows-x64.zip) — 直接下载 |
+| macOS（Apple Silicon） | [点击此处](https://github.com/danialshirali16/Fig-Backup/releases/latest)|
+| Windows 10/11（x64） | [点击此处](https://github.com/danialshirali16/Fig-Backup/releases/latest/download/Fig-Backup-Windows-x64.zip)|
 
 每个版本还附带 `SHA256SUMS.txt`，包含这两个文件的校验和。
 

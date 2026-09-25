@@ -26,8 +26,8 @@
 
 | Platform | İndirme |
 | --- | --- |
-| macOS (Apple Silicon) | [`Fig-Backup-macOS.zip`](https://github.com/danialshirali16/Fig-Backup/releases/latest) — dosya adı sürüm numarasını içerir |
-| Windows 10/11 (x64) | [`Fig-Backup-Windows-x64.zip`](https://github.com/danialshirali16/Fig-Backup/releases/latest/download/Fig-Backup-Windows-x64.zip) — doğrudan indirme |
+| macOS (Apple Silicon) | [Buraya tıklayın](https://github.com/danialshirali16/Fig-Backup/releases/latest)|
+| Windows 10/11 (x64) | [Buraya tıklayın](https://github.com/danialshirali16/Fig-Backup/releases/latest/download/Fig-Backup-Windows-x64.zip)|
 
 Her sürüm, her iki dosyanın sağlama toplamlarını içeren bir `SHA256SUMS.txt` dosyası da içerir.
 

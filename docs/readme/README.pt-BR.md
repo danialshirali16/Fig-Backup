@@ -26,8 +26,8 @@ Obtenha a [**versão mais recente**](https://github.com/danialshirali16/Fig-Back
 
 | Plataforma | Download |
 | --- | --- |
-| macOS (Apple Silicon) | [`Fig-Backup-macOS.zip`](https://github.com/danialshirali16/Fig-Backup/releases/latest) — o nome do arquivo inclui a versão |
-| Windows 10/11 (x64) | [`Fig-Backup-Windows-x64.zip`](https://github.com/danialshirali16/Fig-Backup/releases/latest/download/Fig-Backup-Windows-x64.zip) — download direto |
+| macOS (Apple Silicon) | [Clique aqui](https://github.com/danialshirali16/Fig-Backup/releases/latest)|
+| Windows 10/11 (x64) | [Clique aqui](https://github.com/danialshirali16/Fig-Backup/releases/latest/download/Fig-Backup-Windows-x64.zip)|
 
 Cada versão também inclui um arquivo `SHA256SUMS.txt` com as somas de verificação dos dois arquivos.
 

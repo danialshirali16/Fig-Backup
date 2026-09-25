@@ -26,8 +26,8 @@
 
 | プラットフォーム | ダウンロード |
 | --- | --- |
-| macOS（Apple Silicon） | [`Fig-Backup-macOS.zip`](https://github.com/danialshirali16/Fig-Backup/releases/latest) — ファイル名にバージョン番号が含まれます |
-| Windows 10/11（x64） | [`Fig-Backup-Windows-x64.zip`](https://github.com/danialshirali16/Fig-Backup/releases/latest/download/Fig-Backup-Windows-x64.zip) — 直接ダウンロード |
+| macOS（Apple Silicon） | [こちらをクリック](https://github.com/danialshirali16/Fig-Backup/releases/latest)|
+| Windows 10/11（x64） | [こちらをクリック](https://github.com/danialshirali16/Fig-Backup/releases/latest/download/Fig-Backup-Windows-x64.zip)|
 
 各リリースには、両ファイルのチェックサムを記録した`SHA256SUMS.txt`も同梱されています。
 
