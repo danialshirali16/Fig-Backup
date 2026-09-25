@@ -2,12 +2,16 @@
 from __future__ import annotations
 
 import base64
+import json
+import platform
 import re
 import os
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 
 from playwright.sync_api import TimeoutError as PlaywrightTimeout
 from playwright.sync_api import sync_playwright
@@ -89,12 +93,83 @@ class Browser:
     @staticmethod
     def _install_chromium() -> None:
         driver, cli = compute_driver_executable()
+        failures = []
+        for host, label in Browser._ordered_hosts():
+            env = {**os.environ, "PLAYWRIGHT_DOWNLOAD_HOST": host}
+            try:
+                subprocess.run([str(driver), str(cli), "install", "chromium"],
+                               check=True, capture_output=True, text=True,
+                               timeout=Browser.INSTALL_TIMEOUT,
+                               creationflags=SUBPROCESS_FLAGS, env=env)
+                return
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+                detail = (getattr(error, "stderr", None) or getattr(error, "output", None) or "").strip().splitlines()
+                failures.append(f"{label}: {detail[-1] if detail else 'failed'}")
+        raise FigmaError(
+            "Automatic Chromium installation failed - tried all sources: " + "; ".join(failures)
+        )
+
+    # The official CDN is unreachable from some networks (regional blocks and
+    # firewalls); these mirrors serve the same builds/ tree byte-for-byte.
+    DOWNLOAD_HOSTS = (
+        "https://cdn.playwright.dev",
+        "https://registry.npmmirror.com/-/binary/playwright",
+        "https://cdn.npmmirror.com/binaries/playwright",
+    )
+    _HOST_LABELS = {
+        "https://cdn.playwright.dev": "playwright.dev",
+        "https://registry.npmmirror.com/-/binary/playwright": "npmmirror",
+        "https://cdn.npmmirror.com/binaries/playwright": "npmmirror-cdn",
+    }
+    # A slow single-stream mirror can legitimately need tens of minutes for
+    # chromium + headless-shell, so this is a generous ceiling, not a guess.
+    INSTALL_TIMEOUT = 2400
+
+    @classmethod
+    def _ordered_hosts(cls) -> tuple[tuple[str, str], ...]:
+        pairs = [(host, cls._HOST_LABELS[host]) for host in cls.DOWNLOAD_HOSTS]
+        archive = cls._chromium_archive_path()
+        if archive is None:
+            return tuple(pairs)
+        with ThreadPoolExecutor(max_workers=len(pairs)) as pool:
+            live = {host for host, _ in pairs
+                    if pool.submit(cls._probe_host, host, archive).result()}
+        if not live:
+            # The probe can be wrong (proxies, odd TLS stacks); install anyway
+            # in the default order rather than refusing.
+            return tuple(pairs)
+        return tuple([(host, label) for host, label in pairs if host in live]
+                     + [(host, label) for host, label in pairs if host not in live])
+
+    @staticmethod
+    def _probe_host(host: str, archive_path: str) -> bool:
+        request = Request(f"{host}/{archive_path}",
+                          headers={"Range": "bytes=0-65535", "User-Agent": "Fig-Backup"})
         try:
-            subprocess.run([str(driver), str(cli), "install", "chromium"],
-                           check=True, capture_output=True, text=True, timeout=900,
-                           creationflags=SUBPROCESS_FLAGS)
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
-            raise FigmaError(f"Automatic Chromium installation failed: {error}") from error
+            with urlopen(request, timeout=10) as response:
+                if response.status not in (200, 206):
+                    return False
+                response.read(65536)
+                return True
+        except Exception:
+            return False
+
+    @staticmethod
+    def _chromium_archive_path() -> str | None:
+        """Path of the pinned chromium zip under any Playwright download host."""
+        try:
+            _, cli = compute_driver_executable()
+            manifest = (Path(cli).parent / "browsers.json").read_text(encoding="utf-8")
+            entry = next(b for b in json.loads(manifest)["browsers"] if b["name"] == "chromium")
+            version = entry["browserVersion"]
+        except Exception:
+            return None
+        if sys.platform == "win32":
+            return f"builds/cft/{version}/win64/chrome-win64.zip"
+        if sys.platform == "darwin":
+            arch = "mac-arm64" if platform.machine() == "arm64" else "mac-x64"
+            return f"builds/cft/{version}/{arch}/chrome-{arch}.zip"
+        return f"builds/cft/{version}/linux64/chrome-linux64.zip"
 
     def close(self) -> None:
         if self.context is not None:
