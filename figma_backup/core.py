@@ -34,10 +34,21 @@ class BrowserAuthError(FigmaError):
     """Browser-session failures that must stop the whole queue until the user signs in."""
 
 
+# Windows refuses to create files whose stem (text before the first dot) is a
+# device name, whatever the extension — "CON.fig" is as invalid as "CON".
+WINDOWS_RESERVED_STEMS = frozenset(
+    {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
+)
+
+
 def clean_name(value: str | None) -> str:
     name = unicodedata.normalize("NFC", str(value or "Untitled"))
     name = re.sub(r'[\x00-\x1f\x7f/\\:*?"<>|]', "_", name)
-    return name.strip(". ")[:90] or "Untitled"
+    name = name.strip(". ")[:90] or "Untitled"
+    stem, dot, rest = name.partition(".")
+    if stem.upper() in WINDOWS_RESERVED_STEMS:
+        name = f"{stem}_.{rest}" if dot else f"{stem}_"
+    return name
 
 
 def read_json(path: Path, fallback: Any) -> Any:
@@ -97,16 +108,19 @@ class PreferencesStore:
             "language": body.get("language") if body.get("language") in self.LANGUAGES else "en",
             "theme": body.get("theme") if body.get("theme") in self.THEMES else "system",
             "onboarding_complete": body.get("onboarding_complete") is True,
+            "setup_version": body.get("setup_version") if body.get("setup_version") == 2 else 0,
         }
 
     def save(self, changes: dict) -> dict:
-        if not isinstance(changes, dict) or set(changes) - {"language", "theme", "onboarding_complete"}:
+        if not isinstance(changes, dict) or set(changes) - {"language", "theme", "onboarding_complete", "setup_version"}:
             raise FigmaError("Invalid preferences")
         result = {**self.load(), **changes}
         if result["language"] not in self.LANGUAGES or result["theme"] not in self.THEMES:
             raise FigmaError("Choose a supported language and theme")
         if not isinstance(result["onboarding_complete"], bool):
             raise FigmaError("Invalid onboarding state")
+        if result["setup_version"] not in (0, 2):
+            raise FigmaError("Invalid setup version")
         write_json(self.path, result)
         return result
 

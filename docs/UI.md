@@ -18,28 +18,28 @@ Shown when there is no stored token or setup was never completed. Two steps with
 
 | Step | Contents | Exits |
 | --- | --- | --- |
-| 1 · Access token | PAT input (`figd_…`), scopes hint, privacy note. *Save and continue* verifies via `/v1/me` and shows “Token verified for *name*”. While the one-time browser setup runs, a slim status card (spinner + “One-time setup” + indeterminate bar) sits under the privacy note. | → Step 2 |
-| 2 · Browser sign-in | Explains the one-time Figma browser session. *Open sign-in window* becomes *I've signed in* after opening. While setup runs the button is disabled and labeled “Waiting for one-time setup…” above a full status block (badge, ~150 MB note, indeterminate bar); on failure it becomes *Retry setup* next to a danger block (`role="alert"`). | *I've signed in* → Teams · **I'll sign in later** → Teams (postponed; always enabled) |
+| 1 · Browser | Explains the Chrome → Edge → Chromium fallback. Shows detection, installation progress and retry; *Check browser and continue* launches the chosen browser headlessly before advancing. | Verified browser → Step 2 |
+| 2 · Access token | Three numbered instructions explain where to create a token in Figma, which three scopes to enable, and why it must be copied immediately. A button opens Figma settings. The labeled paste field follows; a new or already saved token is verified via `/v1/me`. | Verified token → Step 3 |
+| 3 · Browser sign-in | Explains that the visible sign-in window opens only by user action. *Verify sign-in* closes that window and checks the saved session in a hidden browser. Failure remains on this step. | Verified session → Teams |
 
 ### One-time browser setup
 
-Chromium (~150 MB) is not bundled; the app auto-downloads it once at launch (`bootstrap` → proactive install). One shared phase model — `ready` renders nothing, `setting_up` renders a brand-tinted status block with an honest **indeterminate** bar (the installer's output is quantized, so no percentage is fabricated; the bar is `aria-hidden` and the block is a `role="status"` live region), `failed` renders the danger pair with *Retry setup* in place. Surfaces: wizard steps 1–2, a Teams banner (Refresh hidden while installing; the “No teams found” empty state is gated on readiness and replaced by “Finding your teams…”), and the download-manager header (spinner block temporarily replaces the determinate progress ring; a running queue item reads “Waiting for one-time setup…”; after success a 2.5 s “Browser ready” flash plus a toast fires). After ~5 minutes the body copy swaps once to a slower-network note. There is deliberately no cancel — quitting the app is the implicit, safe cancel (the installer is idempotent and self-heals on next launch).
+The app first tries installed Chrome or Edge. If neither is available or usable, it downloads Chromium and its headless build (~325 MB total). Readiness for the fallback requires both pinned revisions, their executables, and completion markers. `setting_up` shows byte progress when the source announces a total and an indeterminate bar otherwise; `failed` shows technical details and *Retry setup*. Status appears in wizard step 1, Teams, and the download manager. After ~5 minutes, the message changes for slower networks. Quitting during setup is safe; the next launch retries incomplete files.
 
-- **Postponed sign-in**: the app works normally; if a backup run fails because of a missing
-  browser session, the app routes back to step 2 (step 1 shown complete) and the queue offers
-  *Retry & continue*.
-- **Language is English by default**; change it in Settings (or the “Change in Settings” link on
-  step 1). There is deliberately no language step in the wizard.
-- **Redo setup** (Settings) re-opens the wizard at step 1 if no token is stored, otherwise at
-  step 2.
+- **Expired sign-in**: a backup run with a missing browser session routes back to step 1 to recheck
+  all three requirements. The queue offers *Retry & continue* after setup completes.
+- **Language is English by default**; change it in Settings or from the token step. There is no
+  language step in the wizard.
+- **Redo setup** (Settings) re-opens the wizard at step 1. A saved token can be verified in step 2
+  without asking the user to retrieve it again.
 
 ## Teams
 
 Borderless list of discovered teams (team avatar, name, chevron). Avatars discovered in the
 Figma team switcher are stored locally for display in the app; teams without an available image show
 their initial. *Refresh* re-scrapes the team switcher (hidden while the one-time browser setup is
-installing — it cannot help). If the browser session is missing, a banner offers *Open sign-in
-window* (same as wizard step 2). During browser setup a status banner takes that slot (“Downloading
+installing — it cannot help). If the browser session is missing, a banner offers *Redo setup*.
+During browser setup a status banner takes that slot (“Downloading
 the backup browser”, or its danger variant with *Retry setup* on failure); the list area shows
 “Finding your teams…” instead of the empty state until setup settles.
 
@@ -127,8 +127,9 @@ of the app remains available while a backup runs.
 - The settings card starts directly below the top bar, with 4px top and bottom padding and no gap between rows. The last row has no bottom divider. Token storage notes are documented in the README rather than repeated in the screen.
 - **Language** — English (default) / فارسی. Applies immediately, including direction.
 - **Appearance** — Light / Dark / Follow system.
-- **Access token** — replace without redoing setup.
-- **Redo setup** — re-run the wizard (token step skipped if a token is stored).
+- **Access token** — replacing it reopens all three setup checks, since the saved browser session
+  must still match the new token's access.
+- **Redo setup** — re-run all three checks; a saved token can be reverified without re-entering it.
 
 ## Design system
 

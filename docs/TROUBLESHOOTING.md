@@ -21,7 +21,9 @@ Fig Backup is open source and unsigned, so macOS warns on first launch:
 
 ## "One-time setup" / browser download fails
 
-Chromium (~150 MB) is downloaded once, at first launch.
+If installed Chrome or Edge cannot run, Fig Backup downloads Chromium and its headless build
+(~325 MB total). It also uses this fallback after a system browser crash. Each browser keeps a
+separate Fig Backup sign-in profile.
 
 - Check your internet connection and press **Retry setup**.
 - The installer is idempotent: quitting the app mid-download is safe, and the next launch continues
@@ -34,7 +36,8 @@ Chromium (~150 MB) is downloaded once, at first launch.
 - **Verification fails / HTTP 401** — the token was revoked or mistyped. Create a new one
   (Figma → Settings → Security → Personal access tokens) and replace it under Settings → Access
   token.
-- **Missing permissions** — the token needs `folders:read` and `file_metadata:read`; without them,
+- **Missing permissions** — the token needs `folders:read`, `file_metadata:read`, and
+  `current_user:read` (used to verify the token); without them,
   teams or folders come back empty or forbidden. Older tokens with `projects:read` also work: the
   app falls back to the legacy Projects API automatically.
 - **Where is it stored?** `~/Library/Application Support/Fig Backup/token.json` (permissions
@@ -42,9 +45,9 @@ Chromium (~150 MB) is downloaded once, at first launch.
 
 ## Sign-in problems
 
-- **"Sign-in required" before a backup** — the browser session expired, or you postponed sign-in
-  during setup. Run *Settings → Redo setup* (the token step is skipped) or open the sign-in window
-  again; after one sign-in, backups run headless with no visible browser.
+- **"Sign-in required" before a backup** — the browser session expired. Run *Settings → Redo setup*
+  and verify the browser, saved token, and sign-in again; after setup, backups run headless with no
+  visible browser.
 - **"Editor blocked (HTTP 403)"** — Figma refused the automated editor session. Sign in again; if
   it repeats, wait a while before retrying.
 - Backups stop on sign-in errors by design, since they cannot proceed without a session. Use

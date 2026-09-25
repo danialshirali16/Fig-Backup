@@ -19,16 +19,19 @@ class in `figma_backup/app.py`), and the Bridge runs all browser work on a singl
 
 | Method | Purpose |
 | --- | --- |
-| `bootstrap()` | Create support dirs, return `{has_token, downloads, teams, preferences, browser, version}`; when `browser.phase` is `missing`, proactively submits the one-time Chromium install |
-| `save_preferences(changes)` | Persist language/theme/onboarding flags (validated) |
+| `bootstrap()` | Create support dirs, return `{has_token, downloads, teams, preferences, browser, version}`; `browser.source` identifies installed Chrome/Edge or bundled Chromium. If none is available, proactively submit Chromium installation |
+| `save_preferences(changes)` | Persist language and theme; setup completion cannot be set here |
+| `begin_setup()` | Invalidate prior completion and require all three checks again |
 | `save_token(token)` | Validate via `/v1/me`, store to `token.json` (0600); returns `{name}` |
+| `verify_browser()` / `verify_token()` | Prove the headless browser launches and validate a stored token before advancing Setup |
+| `complete_setup()` | Verify the browser session, then persist setup version 2 and unlock downloads |
 | `install_browser()` | Run the one-time Playwright Chromium install on the worker thread; guarded (`{started: false}` while already installing) |
 | `discover_teams()` | Headless browser scrape of the team switcher; merges with `teams.json` |
 | `add_team(link, name)` | Register a team by URL/ID |
 | `folders(team_id)` | v2 Folders API with fallback to legacy v1 Projects API |
 | `subfolders(folder_id)` | Child folders; marks HTTP 451 folders unavailable |
-| `files(folder_id)` | Files in a folder (v2 or v1 depending on fallback), enriched with each file's `editorType` (cached) for the file-type icons |
-| `open_sign_in()` | Visible Chromium window on figma.com/files for one-time sign-in |
+| `files(folder_id)` | Files in a folder (v2 or v1 depending on fallback), enriched with each file's `editorType` (cached, resolved by 4 parallel workers; a confirmed HTTP 429 drops the rest and icons fall back) for the file-type icons |
+| `open_sign_in()` / `close_sign_in()` | Opens a visible Chrome/Edge or bundled Chromium window only on explicit sign-in; closes it before session verification |
 | `start_download(selection)` | Start one backup; scopes: `{team, scope:'team'}` / `{scope:'folder', folder}` / `{scope:'file', folder, file_key}` |
 | `stop_download()` | Ask the current run to stop after the active file |
 | `status()` | Snapshot `{running, phase, items, total, saved, existing, skipped, failed, message, destination, finished, browser}` |
@@ -54,23 +57,27 @@ UI as a sequential queue of per-item `start_download` calls (see “Backup queue
   `/slides/`), and any other file type is skipped with its type noted in the queue. Each editor's
   "Save local copy" yields its own native container — `.fig`, `.jam` (FigJam), `.deck` (Slides) —
   and downloads are named and verified accordingly. FigJam boards can crash the headless browser
-  on first attempt; the existing Chromium-crash retry (which switches to the headless shell) picks
-  them up.
+  on first attempt; the retry opens the next installed browser or bundled Chromium. A bundled
+  Chromium crash retries with its headless shell.
 - `verify_fig(path)` rejects files ≤ 1 KB or HTML/JSON error responses.
 
 ## Browser automation (`browser.py`)
 
-- Launches a **persistent Chromium context** (profile in the legacy support folder) so the Figma
-  session survives restarts. Headless for all background work; a visible window only for the
-  one-time sign-in.
-- **One-time install**: Chromium is not bundled. `chromium_ready()` (executable glob + Playwright's
-  `INSTALLATION_COMPLETE` marker; fails toward "missing") drives the UI state; `bootstrap()` submits
-  the install proactively when missing, exposed as a separate `browser` state dict
+- Tries installed Chrome, then Edge, using a separate persistent profile for each. Their Figma
+  sessions survive restarts without touching the user's normal browser profile. Browser work is
+  headless except for one-time sign-in initiated by the user. That window closes when setup ends.
+  If a system browser fails to launch or crashes, try the
+  next installed browser, then bundled Chromium.
+- **Fallback install**: Chromium and its headless shell are not bundled. `chromium_ready()` checks
+  the pinned revision, executable, and `INSTALLATION_COMPLETE` marker for both builds; `bootstrap()` submits
+  the install proactively only when no system browser and no complete fallback are available,
+  exposed as a separate `browser` state dict
   (`ready | missing | setting_up | failed` — separate from the download state because
   `start_download` replaces that dict). `Browser.open()` keeps its own lazy install as the safety
-  net, and `playwright install` is idempotent, so retries need no cleanup. Subprocesses pass
+  net. The installer reuses complete caches, repairs the earlier headless-shell cache name,
+  and falls back to `playwright install` when mirrors fail. Subprocesses pass
   `CREATE_NO_WINDOW` on Windows so the windowed exe never flashes a console.
-- Headless runs set a real Chrome user agent (derived from the installed Chromium version) and
+- Headless runs set a real Chrome user agent (derived from the active browser version) and
   neutralize `navigator.webdriver`.
 - **Save local copy** flow: keyboard shortcut `Cmd+/` → quick-action search → “save local copy”;
   fallback path: main menu → File → Save local copy. On failure a screenshot is written to the
@@ -83,7 +90,7 @@ UI as a sequential queue of per-item `start_download` calls (see “Backup queue
 | Path | Contents |
 | --- | --- |
 | `~/Library/Application Support/Fig Backup/` | `token.json` (0600), `preferences.json`, `archive-roots.json`, `archives/<team>/paths.json`, runtime `venv/` (launcher) |
-| `~/Library/Application Support/Figma Fig Downloader/` | Legacy `teams.json`, `downloads.json` index, Chromium profile — reused for compatibility |
+| `~/Library/Application Support/Figma Fig Downloader/` | Legacy `teams.json`, `downloads.json` index, bundled Chromium profile, and separate Chrome/Edge profiles |
 | `~/Downloads/Fig Backup/<Team>/…` | Tree backups (folder structure preserved, stable collision-safe names) |
 | `~/Downloads/*.fig` | Single-file downloads |
 
@@ -98,15 +105,20 @@ onboarding_complete: bool}`. English is the default; the setup wizard has no lan
 (`max-w-[680px]`); the window is 960×700. There is no sidebar — navigation is the breadcrumb
 (Teams is the root) plus a predictable Back button.
 
-### Setup wizard (2 steps)
+### Setup wizard (3 required steps)
 
-1. **Access token** — save + verify via `/v1/me`; shows “Token verified for *name*”.
-2. **Browser sign-in** — “Open sign-in window” then “I've signed in”, or **I'll sign in later**
-   (finishes setup; the app still works, and the first sign-in-dependent failure routes back to
-   this step with step 1 shown complete). *Redo setup* lives in Settings.
+1. **Browser** — launch the installed Chrome/Edge or fallback Chromium headlessly to prove it works.
+   Download status and retry appear here when the fallback is needed.
+2. **Access token** — save and verify a new token via `/v1/me`, or reverify a stored token.
+3. **Browser sign-in** — open a visible sign-in window only on request, then verify that its saved
+   session reaches the authenticated Figma files page in headless mode. A failed check stays on
+   this step. The sign-in window closes before verification. *Redo setup* lives in Settings.
 
-The wizard is shown when `onboarding_complete` is false or no token is stored. A returning user
+The wizard is shown when `onboarding_complete` is false, no token is stored, or the saved
+`setup_version` predates the required flow. Only `complete_setup()` sets completion and version 2
+after all three checks; `start_download()` rejects incomplete setup. A returning verified user
 lands directly in Teams.
+Replacing a previously verified token invalidates completion and starts the wizard again.
 
 ### Selection model (multi-select)
 

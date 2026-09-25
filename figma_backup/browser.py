@@ -2,15 +2,18 @@
 from __future__ import annotations
 
 import base64
+import ctypes
 import json
 import platform
 import re
 import os
+import plistlib
 import shutil
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -41,6 +44,10 @@ class Browser:
         self.page = None
         self.headless = True
         self.use_headless_shell = False
+        self.active_channel = None
+        self.failed_system_channels: set[str] = set()
+        self.installing = False
+        self.install_error = ""
 
     @staticmethod
     def browser_cache_dir() -> Path:
@@ -49,52 +56,162 @@ class Browser:
             return Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData/Local")) / "ms-playwright"
         return Path.home() / "Library/Caches/ms-playwright"
 
+    @staticmethod
+    def _windows_app_paths(executable: str) -> list[Path]:
+        """Find browser installations registered outside the usual directories."""
+        try:
+            import winreg
+        except ImportError:
+            return []
+        paths = []
+        for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+            for view in (winreg.KEY_WOW64_64KEY, winreg.KEY_WOW64_32KEY):
+                try:
+                    with winreg.OpenKey(hive,
+                            rf"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\{executable}",
+                            0, winreg.KEY_READ | view) as key:
+                        value, _ = winreg.QueryValueEx(key, None)
+                    if value:
+                        paths.append(Path(value.strip('"')))
+                except OSError:
+                    continue
+        return paths
+
+    @staticmethod
+    def system_browsers() -> list[tuple[str, Path]]:
+        """Installed Chrome/Edge builds that Playwright can drive without a download."""
+        if sys.platform == "win32":
+            program_files = Path(os.environ.get("PROGRAMFILES", "C:/Program Files"))
+            program_files_x86 = Path(os.environ.get("PROGRAMFILES(X86)", "C:/Program Files (x86)"))
+            local = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData/Local"))
+            candidates = [
+                ("chrome", program_files / "Google/Chrome/Application/chrome.exe"),
+                ("chrome", program_files_x86 / "Google/Chrome/Application/chrome.exe"),
+                ("chrome", local / "Google/Chrome/Application/chrome.exe"),
+                *(("chrome", path) for path in Browser._windows_app_paths("chrome.exe")),
+                ("msedge", program_files_x86 / "Microsoft/Edge/Application/msedge.exe"),
+                ("msedge", program_files / "Microsoft/Edge/Application/msedge.exe"),
+                ("msedge", local / "Microsoft/Edge/Application/msedge.exe"),
+                *(("msedge", path) for path in Browser._windows_app_paths("msedge.exe")),
+            ]
+        elif sys.platform == "darwin":
+            candidates = [
+                (channel, applications / app / "Contents/MacOS" / binary)
+                for channel, app, binary in (
+                    ("chrome", "Google Chrome.app", "Google Chrome"),
+                    ("msedge", "Microsoft Edge.app", "Microsoft Edge"),
+                )
+                for applications in (Path("/Applications"), Path.home() / "Applications")
+            ]
+        else:
+            return []
+        found = []
+        for channel, path in candidates:
+            if path.is_file() and channel not in {item[0] for item in found}:
+                found.append((channel, path))
+        return found
+
+    @staticmethod
+    def _windows_file_version(path: Path) -> str:
+        """Read the installed browser version without opening a console window."""
+        if sys.platform != "win32":
+            return ""
+        try:
+            version = ctypes.windll.version
+            size = version.GetFileVersionInfoSizeW(str(path), None)
+            data = ctypes.create_string_buffer(size)
+            if not size or not version.GetFileVersionInfoW(str(path), 0, size, data):
+                return ""
+            value = ctypes.c_void_p()
+            length = ctypes.c_uint()
+            if not version.VerQueryValueW(data, "\\", ctypes.byref(value), ctypes.byref(length)):
+                return ""
+            fields = ctypes.cast(value, ctypes.POINTER(ctypes.c_uint32))
+            major_minor, build_patch = fields[2], fields[3]
+            return f"{major_minor >> 16}.{major_minor & 0xffff}.{build_patch >> 16}.{build_patch & 0xffff}"
+        except (AttributeError, OSError, ValueError):
+            return ""
+
+    @classmethod
+    def _headless_user_agent(cls, binary: Path) -> str:
+        version = cls._windows_file_version(binary)
+        if not version and sys.platform != "win32":
+            try:
+                reported = subprocess.run([str(binary), "--version"], capture_output=True,
+                                          text=True, timeout=10, creationflags=SUBPROCESS_FLAGS).stdout
+                match = re.search(r"(\d+\.\d+\.\d+\.\d+)", reported)
+                version = match.group(1) if match else ""
+            except Exception:
+                pass
+        if not version and sys.platform == "darwin":
+            try:
+                info = plistlib.loads((binary.parent.parent / "Info.plist").read_bytes())
+                version = str(info.get("CFBundleShortVersionString", ""))
+            except (OSError, ValueError):
+                pass
+        if not version:
+            entry = cls._manifest_entry("chromium")
+            version = (entry or {}).get("browserVersion", "")
+        if not re.fullmatch(r"\d+\.\d+\.\d+\.\d+", version):
+            raise FigmaError("Could not determine the browser version")
+        platform_agent = "Windows NT 10.0; Win64; x64" if sys.platform == "win32" else "Macintosh; Intel Mac OS X 10_15_7"
+        return (f"Mozilla/5.0 ({platform_agent}) AppleWebKit/537.36 "
+                f"(KHTML, like Gecko) Chrome/{version} Safari/537.36")
+
     def open(self, headless: bool = True) -> None:
         self.close()
+        self.active_channel = None
+        self.install_error = ""
         os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(self.browser_cache_dir())
         if self.playwright is None:
             self.playwright = sync_playwright().start()
         self.support.mkdir(parents=True, exist_ok=True, mode=0o700)
-        browser_binary = Path(self.playwright.chromium.executable_path)
-        if not browser_binary.exists():
-            self._install_chromium()
         options = dict(headless=headless, accept_downloads=True,
                        viewport={"width": 1400, "height": 900})
-        if not headless or not self.use_headless_shell:
-            options["channel"] = "chromium"
         if headless:
-            reported = ""
-            try:
-                reported = subprocess.run([str(browser_binary), "--version"],
-                                          capture_output=True, text=True, timeout=30,
-                                          creationflags=SUBPROCESS_FLAGS).stdout
-            except Exception:
-                pass  # chrome.exe is GUI-subsystem on Windows: --version prints nothing
-            match = re.search(r"(\d+\.\d+\.\d+\.\d+)", reported)
-            if not match:
-                entry = Browser._manifest_entry("chromium")
-                match = re.search(r"(\d+\.\d+\.\d+\.\d+)",
-                                  (entry or {}).get("browserVersion", ""))
-            if not match:
-                raise FigmaError("Could not determine the Chromium version")
-            platform_agent = "Windows NT 10.0; Win64; x64" if sys.platform == "win32" else "Macintosh; Intel Mac OS X 10_15_7"
-            options["user_agent"] = (
-                f"Mozilla/5.0 ({platform_agent}) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                f"Chrome/{match.group(1)} Safari/537.36"
-            )
             options["args"] = ["--disable-blink-features=AutomationControlled"]
-        try:
-            self.context = self.playwright.chromium.launch_persistent_context(
-                str(self.support / "chromium-profile"), **options,
-            )
-        except Exception as error:
-            if "Executable doesn't exist" not in str(error):
-                raise
-            self._install_chromium()
-            self.context = self.playwright.chromium.launch_persistent_context(
-                str(self.support / "chromium-profile"), **options,
-            )
+        if not (headless and self.use_headless_shell):
+            skip_once = self.failed_system_channels.copy()
+            self.failed_system_channels.clear()
+            for channel, binary in self.system_browsers():
+                if channel in skip_once:
+                    continue
+                for attempt in range(2 if channel == "chrome" else 1):
+                    try:
+                        system_options = {**options, "channel": channel, "executable_path": str(binary)}
+                        if headless:
+                            system_options["user_agent"] = self._headless_user_agent(binary)
+                        self.context = self.playwright.chromium.launch_persistent_context(
+                            str(self.support / f"chromium-profile-{channel}"), **system_options,
+                        )
+                        self.active_channel = channel
+                        break
+                    except Exception:
+                        if attempt == 0 and channel == "chrome":
+                            time.sleep(0.3)
+                if self.context is not None:
+                    break
+        if self.context is None:
+            browser_binary = Path(self.playwright.chromium.executable_path)
+            if not chromium_ready():
+                self._install_bundled()
+            bundled_options = dict(options)
+            if not headless or not self.use_headless_shell:
+                bundled_options["channel"] = "chromium"
+            if headless:
+                bundled_options["user_agent"] = self._headless_user_agent(browser_binary)
+            try:
+                self.context = self.playwright.chromium.launch_persistent_context(
+                    str(self.support / "chromium-profile"), **bundled_options,
+                )
+            except Exception as error:
+                if "Executable doesn't exist" not in str(error):
+                    raise
+                self._install_bundled()
+                self.context = self.playwright.chromium.launch_persistent_context(
+                    str(self.support / "chromium-profile"), **bundled_options,
+                )
+            self.active_channel = "chromium"
         if headless:
             self.context.add_init_script(
                 'Object.defineProperty(navigator, "webdriver", {get: () => undefined})'
@@ -102,9 +219,24 @@ class Browser:
         self.page = self.context.pages[0] if self.context.pages else self.context.new_page()
         self.headless = headless
 
+    def _install_bundled(self) -> None:
+        self.installing = True
+        self.install_error = ""
+        try:
+            self._install_chromium()
+        except Exception as error:
+            self.install_error = str(error).splitlines()[0]
+            raise
+        finally:
+            self.installing = False
+
     @classmethod
     def _install_chromium(cls) -> None:
         """Install the pinned browsers, trying every download source in turn."""
+        cls._migrate_legacy_shell()
+        if chromium_ready():
+            cls._reset_progress(0)
+            return
         failures = []
         for host, label in cls._ordered_hosts():
             try:
@@ -116,9 +248,9 @@ class Browser:
                 failures.append(f"{label}: {error}")
         cls._reset_progress(0)
         error = cls._install_via_cli()
-        if error is None:
+        if error is None and chromium_ready():
             return
-        failures.append(error)
+        failures.append(error or "playwright-installer: browser files are incomplete")
         raise FigmaError(
             "Automatic Chromium installation failed - tried all sources: "
             + "; ".join(failures)
@@ -156,8 +288,8 @@ class Browser:
                 entry = cls._manifest_entry(name)
                 if not entry:
                     continue
-                dest = cls.browser_cache_dir() / f"{name}-{entry['revision']}"
-                if (dest / "INSTALLATION_COMPLETE").exists():
+                dest = cls._browser_dir(name, entry["revision"])
+                if cls._browser_installed(name, dest):
                     continue
                 archive, _ = cls._cft_archive(name, entry["browserVersion"])
                 pending += cls._content_length(f"{host}/{archive}")
@@ -172,17 +304,60 @@ class Browser:
         if not entry:
             raise RuntimeError(f"{name} is missing from the bundled browsers.json")
         archive, top = cls._cft_archive(name, entry["browserVersion"])
-        dest = cls.browser_cache_dir() / f"{name}-{entry['revision']}"
-        if (dest / "INSTALLATION_COMPLETE").exists():
+        dest = cls._browser_dir(name, entry["revision"])
+        if cls._browser_installed(name, dest):
             return
+        # A previous interrupted extraction can leave a marker or partial tree.
+        (dest / "INSTALLATION_COMPLETE").unlink(missing_ok=True)
         with tempfile.TemporaryDirectory(prefix="figbak-pw-") as scratch:
             bundle = Path(scratch) / f"{top}.zip"
             cls._download(f"{host}/{archive}", bundle, cls._bump_progress)
             with zipfile.ZipFile(bundle) as data:
                 data.extractall(dest)
-        if not (dest / top).is_dir():
+        if not cls._browser_binary(name, dest):
             raise RuntimeError(f"unexpected archive layout: {archive}")
         (dest / "INSTALLATION_COMPLETE").write_text("", encoding="utf-8")
+
+    @classmethod
+    def _browser_dir(cls, name: str, revision: str) -> Path:
+        # Playwright's registry replaces hyphens with underscores in cache names.
+        return cls.browser_cache_dir() / f"{name.replace('-', '_')}-{revision}"
+
+    @classmethod
+    def _migrate_legacy_shell(cls) -> None:
+        """Reuse a complete shell saved under the old, incorrect cache name."""
+        name = "chromium-headless-shell"
+        entry = cls._manifest_entry(name)
+        if not entry:
+            return
+        legacy = cls.browser_cache_dir() / f"{name}-{entry['revision']}"
+        current = cls._browser_dir(name, entry["revision"])
+        if not current.exists() and cls._browser_installed(name, legacy):
+            try:
+                legacy.rename(current)
+            except OSError:
+                pass  # A normal download can still populate the current cache.
+
+    @classmethod
+    def _browser_binary(cls, name: str, directory: Path) -> bool:
+        archive = cls._manifest_entry(name)
+        if not archive:
+            return False
+        _, top = cls._cft_archive(name, archive["browserVersion"])
+        root = directory / top
+        if sys.platform == "win32":
+            filename = "chrome-headless-shell.exe" if name.endswith("headless-shell") else "chrome.exe"
+            return (root / filename).is_file()
+        if sys.platform == "darwin":
+            if name.endswith("headless-shell"):
+                return (root / "chrome-headless-shell").is_file()
+            return any(path.is_file() for path in root.glob("*.app/Contents/MacOS/*"))
+        filename = "chrome-headless-shell" if name.endswith("headless-shell") else "chrome"
+        return (root / filename).is_file()
+
+    @classmethod
+    def _browser_installed(cls, name: str, directory: Path) -> bool:
+        return (directory / "INSTALLATION_COMPLETE").is_file() and cls._browser_binary(name, directory)
 
     @staticmethod
     def _cft_archive(name: str, version: str) -> tuple[str, str]:
@@ -228,7 +403,7 @@ class Browser:
             raise RuntimeError(f"no length announced for {url}")
         return int(total)
 
-    SEGMENTS = 16
+    SEGMENTS = 4
 
     @classmethod
     def _download_segments(cls, url: str, size: int, work: Path,
@@ -251,7 +426,7 @@ class Browser:
 
     @staticmethod
     def _fetch_segment(url: str, start: int, end: int, part: Path,
-                       on_bytes=None, attempts: int = 10) -> None:
+                       on_bytes=None, attempts: int = 4) -> None:
         """Fetch one byte range, resuming from whatever a previous try saved."""
         want = end - start + 1
         for _ in range(attempts):
@@ -264,7 +439,7 @@ class Browser:
             try:
                 request = Request(url, headers={"Range": f"bytes={start + have}-{end}",
                                                 "User-Agent": "Fig-Backup"})
-                with urlopen(request, timeout=60) as response:
+                with urlopen(request, timeout=25) as response:
                     if response.status != 206 and (start + have):
                         raise RuntimeError("server ignored the range request")
                     with part.open("ab") as sink:
@@ -277,6 +452,8 @@ class Browser:
                                 on_bytes(len(chunk))
             except Exception:
                 continue
+            if part.stat().st_size == want:
+                return
         raise RuntimeError(f"segment {start}-{end} failed after {attempts} attempts")
 
     @classmethod
@@ -386,12 +563,40 @@ class Browser:
             self.playwright = None
 
     def recover_from_crash(self) -> None:
+        if self.active_channel in ("chrome", "msedge"):
+            self.failed_system_channels.add(self.active_channel)
+        else:
+            self.use_headless_shell = True
         self.stop()
-        self.use_headless_shell = True
 
     def open_sign_in(self) -> None:
         self.open(headless=False)
+        try:
+            self.page.goto("https://www.figma.com/files", wait_until="domcontentloaded", timeout=90000)
+        except Exception:
+            self.close()
+            raise
+
+    def close_sign_in(self) -> None:
+        if self.context is not None and not self.headless:
+            self.close()
+
+    def verify_sign_in(self) -> bool:
+        """Check the saved browser session in the same headless mode as backups."""
+        self.close_sign_in()
+        if self.context is None:
+            self.open(headless=True)
         self.page.goto("https://www.figma.com/files", wait_until="domcontentloaded", timeout=90000)
+        try:
+            self.page.wait_for_function(
+                "() => document.querySelector('button[aria-label^=\"Plan:\"]') || document.querySelector('a[href*=\"/team/\"]')",
+                timeout=15000,
+            )
+        except PlaywrightTimeout:
+            return False
+        return bool(self._collect_teams()) or self.page.get_by_role(
+            "button", name=re.compile(r"^Plan:")
+        ).first.count() > 0
 
     def _collect_teams(self) -> list[dict]:
         return self.page.evaluate(r"""() => {
@@ -628,22 +833,15 @@ class Browser:
 
 
 def chromium_ready(cache_dir: Path | None = None) -> bool:
-    """Advisory check for the UI: a chromium build with Playwright's completion marker.
+    """Check both pinned browser builds and their executables.
 
     Fails toward False (missing); Browser.open() remains the authoritative installer.
     """
     root = cache_dir if cache_dir is not None else Browser.browser_cache_dir()
     if not root.is_dir():
         return False
-    for directory in root.glob("chromium-*"):
-        if not (directory / "INSTALLATION_COMPLETE").exists():
-            continue
-        if sys.platform == "win32":
-            if any(directory.glob("chrome-win*/*.exe")):
-                return True
-        elif sys.platform == "darwin":
-            if any(directory.glob("chrome-mac*/*.app")):
-                return True
-        else:
-            return True
-    return False
+    for name in ("chromium", "chromium-headless-shell"):
+        entry = Browser._manifest_entry(name)
+        if not entry or not Browser._browser_installed(name, root / f"{name.replace('-', '_')}-{entry['revision']}"):
+            return False
+    return True

@@ -187,12 +187,12 @@ function App() {
   const [systemDark, setSystemDark] = useState(window.matchMedia('(prefers-color-scheme: dark)').matches)
   const [view, setView] = useState('wizard') // wizard | teams | browse | settings
   const [settingsReturn, setSettingsReturn] = useState('teams')
-  const [wizardStep, setWizardStep] = useState('token') // token | signin
+  const [wizardStep, setWizardStep] = useState('browser') // browser | token | signin
   const [verifiedName, setVerifiedName] = useState('')
   const [token, setToken] = useState('')
   const [tokenError, setTokenError] = useState('')
   const [showToken, setShowToken] = useState(false)
-  const [teamsTimeout, setTeamsTimeout] = useState(false)
+  const [teamsError, setTeamsError] = useState('')
   const [teams, setTeams] = useState([])
   const [team, setTeam] = useState(null)
   const [folders, setFolders] = useState([])
@@ -234,6 +234,9 @@ function App() {
   const nativeMac = api && window.pywebview?.platform === 'cocoa'
   const nativeWin = api && window.pywebview?.platform === 'edgechromium'
   const [maximized, setMaximized] = useState(false)
+  /* Bootstrap-time discover() closes over the initial 'en' language; read the live one. */
+  const languageRef = useRef(language)
+  useEffect(() => { languageRef.current = language }, [language])
 
   useEffect(() => {
     if (!nativeWin) return
@@ -279,12 +282,12 @@ function App() {
         setTeams(initial.teams || [])
         if (initial.browser) setBrowserSetup(initial.browser)
         if (initial.browser && initial.browser.phase !== 'ready') watchBrowser(bridge)
-        if (initial.preferences.onboarding_complete && initial.has_token) {
+        if (initial.preferences.onboarding_complete && initial.preferences.setup_version === 2 && initial.has_token) {
           setView('teams')
           await discover(bridge)
         } else {
           setView('wizard')
-          setWizardStep(initial.has_token ? 'signin' : 'token')
+          setWizardStep('browser')
         }
         setReady(true)
       } catch (err) {
@@ -330,25 +333,17 @@ function App() {
   async function discover(bridge = api) {
     if (busy === 'teams') return
     const runId = ++discoverRunRef.current
-    setBusy('teams'); setError('')
+    setBusy('teams'); setError(''); setTeamsError('')
     try {
-      const result = await Promise.race([
-        bridge.discover_teams(),
-        sleep(20000).then(() => { throw new Error('discover-timeout') }),
-      ])
+      const result = await bridge.discover_teams()
       if (runId !== discoverRunRef.current) return // a newer retry owns the screen
       setTeams(result.teams || [])
       setAuthRequired(!!result.auth_required)
-      setTeamsTimeout(false)
     } catch (err) {
       if (runId !== discoverRunRef.current) return
-      if (/discover-timeout/.test(String(err))) {
-        // Keep any list already on screen; only a bare screen gets the inline state.
-        if (teams.length > 0) toast.error(t('teamsTimeout'), { id: 'app-notice' })
-        else setTeamsTimeout(true)
-      } else {
-        setError(firstLine(err))
-      }
+      const message = firstLine(err) || translate(languageRef.current, 'teamsTimeout')
+      if (teams.length > 0) toast.error(message, { id: 'app-notice' })
+      else setTeamsError(message)
     } finally {
       if (runId === discoverRunRef.current) setBusy('')
     }
@@ -382,19 +377,42 @@ function App() {
     watchBrowser()
   }
 
+  async function callWithBrowserStatus(label, action) {
+    const request = call(label, action)
+    const poll = window.setInterval(async () => {
+      try { setBrowserSetup((await api.status()).browser) } catch { /* bridge may close */ }
+    }, 500)
+    let result
+    try { result = await request }
+    finally {
+      window.clearInterval(poll)
+      try { setBrowserSetup((await api.status()).browser) } catch { /* bridge may close */ }
+    }
+    return result
+  }
+
+  async function verifyBrowserContinue() {
+    const result = await callWithBrowserStatus('browser-check', () => api.verify_browser())
+    if (result?.ready) setWizardStep('token')
+  }
+
   async function saveTokenContinue(event) {
     event?.preventDefault()
-    if (!token.trim()) {
+    if (!token.trim() && (view === 'settings' || !hasToken)) {
       setTokenError(t('tokenRequired'))
       document.getElementById(view === 'settings' ? 'token-settings' : 'token-wizard')?.focus()
       return
     }
     setTokenError('')
-    const result = await call('token', () => api.save_token(token))
+    const result = await call('token', () => token.trim() ? api.save_token(token) : api.verify_token())
     if (!result) return
     setHasToken(true)
     setToken('')
     if (view === 'settings') {
+      if (result.setup_required) {
+        void openWizard('browser')
+        return
+      }
       toast.success(t('tokenSavedNotice'), { id: 'app-notice' })
       if (settingsReturn === 'wizard') setWizardStep('signin')
       return
@@ -404,22 +422,35 @@ function App() {
   }
 
   async function completeSetup() {
-    const ok = await savePrefs({ onboarding_complete: true })
-    if (!ok) return
+    const result = await callWithBrowserStatus('sign-in-check', () => api.complete_setup())
+    setLoginOpen(false)
+    if (!result) return
+    if (!result.completed) {
+      setError(t('signinNotVerified'))
+      return
+    }
+    setPreferences(result.preferences)
     setView('teams')
     await discover()
   }
 
   async function signInNow() {
-    if (!loginOpen) {
-      const result = await call('sign-in', () => api.open_sign_in())
-      if (result) setLoginOpen(true)
-      return
-    }
-    await completeSetup()
+    const result = await callWithBrowserStatus('sign-in', () => api.open_sign_in())
+    if (result) setLoginOpen(true)
   }
 
-  function openWizard(step) {
+  async function openWizard(step) {
+    if (step === 'browser' && view !== 'wizard') {
+      const reset = await call('setup-begin', () => api.begin_setup())
+      if (!reset) return
+      setPreferences(reset.preferences)
+      setVerifiedName('')
+    }
+    if (loginOpen && step !== 'signin') {
+      const closed = await call('sign-in-close', () => api.close_sign_in())
+      if (!closed) return
+      setLoginOpen(false)
+    }
     setWizardStep(step)
     setView('wizard')
   }
@@ -484,7 +515,7 @@ function App() {
     } else {
       updateSelection(cur => ({
         folders: [...cur.folders.filter(f => !folders.some(v => v.id === f.id)), ...folders],
-        files: [...cur.files.filter(f => !files.some(v => v.key === f.key)), ...files.map(f => ({ key: f.key, name: f.name, folder }))],
+        files: [...cur.files.filter(f => !files.some(v => v.key === f.key)), ...files.map(f => ({ key: f.key, name: f.name, folder, editorType: f.editorType }))],
       }))
     }
   }
@@ -501,9 +532,20 @@ function App() {
     changeQueue(q => q.map(it => (it.id === id ? { ...it, ...patch } : it)))
   }
   async function waitForRunEnd(runId) {
+    let failures = 0
     for (;;) {
       if (runIdRef.current !== runId) return { cancelled: true }
-      const s = await api.status()
+      let s
+      try {
+        s = await api.status()
+        failures = 0
+      } catch (err) {
+        // A dropped poll must not fail an item whose backend run is still going.
+        failures += 1
+        if (failures > 8) throw err
+        await sleep(400)
+        continue
+      }
       setProgress(s)
       if (!s.running && s.finished) return s
       await sleep(400)
@@ -511,7 +553,7 @@ function App() {
   }
   function routeToSignin() {
     setQueueOpen(false)
-    openWizard('signin')
+    openWizard('browser')
   }
   async function runQueue() {
     if (queueRunnerRef.current) return
@@ -626,7 +668,7 @@ function App() {
     }
   }
   function leaveSettings() { setView(settingsReturn || 'teams'); setToken(''); setTokenError(''); setError(''); toast.dismiss('app-notice') }
-  function redoSetup() { setVerifiedName(''); setView('wizard'); setWizardStep(hasToken ? 'signin' : 'token') }
+  function redoSetup() { void openWizard('browser') }
 
   function startDownload(sel) {
     if (!team || !sel) return
@@ -672,11 +714,11 @@ function App() {
 
   /* ---------- wizard ---------- */
   const wizard = view === 'wizard' && (
-    <Card className="mx-auto w-full max-w-xl px-7 py-6">
-      <div className="mb-5 flex items-center">
-        {[['token', t('stepToken')], ['signin', t('stepSignin')]].map(([key, label], i) => {
+    <Card className="mx-auto w-full max-w-[640px] px-5 py-4">
+      <div className="mb-3 flex items-center">
+        {[['browser', t('stepBrowser')], ['token', t('stepToken')], ['signin', t('stepSignin')]].map(([key, label], i) => {
           const cur = wizardStep === key
-          const done = key === 'token' && wizardStep === 'signin'
+          const done = i < ['browser', 'token', 'signin'].indexOf(wizardStep)
           // 13px = (28px circle − 2px line) / 2, and ±22px = 14px radius + 8px gap;
           // both are coupled to the size-7 circle below.
           const circle = (
@@ -690,7 +732,7 @@ function App() {
             <div key={key} className="relative flex flex-1 flex-col items-center gap-1.5">
               {i > 0 && <span aria-hidden="true" className={'absolute top-[13px] h-0.5 start-[calc(-50%+22px)] end-[calc(50%+22px)] ' + (done || cur ? 'bg-primary' : 'bg-muted')} />}
               {done ? (
-                <button type="button" onClick={() => openWizard('token')} aria-label={t('backToToken')} title={t('backToToken')} className="rounded-full focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring">
+                <button type="button" onClick={() => openWizard(key)} aria-label={label} title={label} className="rounded-full focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring">
                   {circle}
                 </button>
               ) : circle}
@@ -699,13 +741,53 @@ function App() {
           )
         })}
       </div>
-      {wizardStep === 'token' ? (
+      {wizardStep === 'browser' ? (
         <>
           <div className="mb-5 text-center">
+            <h1 className="text-xl font-bold tracking-tight text-balance">{t('browserStepTitle')}</h1>
+            <p className="mt-1 text-sm leading-relaxed text-muted-foreground text-pretty">{t('browserStepCopy')}</p>
+          </div>
+          <div className="grid gap-3">
+            {browserSetup.phase === 'ready' && (
+              <div role="status" className="flex items-center gap-2 rounded-lg border border-success/30 bg-success/10 px-3.5 py-2.5 text-sm text-success">
+                <CheckCircle2 className="size-4 shrink-0" aria-hidden="true" />
+                {t('browserCandidate', { browser: browserSetup.source === 'msedge' ? 'Edge' : browserSetup.source === 'chrome' ? 'Chrome' : 'Chromium' })}
+              </div>
+            )}
+            {setupBlocked && <BrowserSetupState phase={setupFailed ? 'failed' : 'setting_up'} message={browserSetup.message} escalated={setupEscalated} t={t} onRetry={retryBrowserSetup} busy={busy} progress={browserSetup} />}
+            <div className="flex justify-end">
+              <Button onClick={verifyBrowserContinue} disabled={!!busy || setupBlocked}>
+                {busy === 'browser-check' ? <Spinner /> : <CheckCircle2 className="size-4" aria-hidden="true" />} {t('browserCheckContinue')}
+              </Button>
+            </div>
+          </div>
+        </>
+      ) : wizardStep === 'token' ? (
+        <>
+          <div className="mb-3 text-center">
             <h1 className="text-xl font-bold tracking-tight text-balance">{t('tokenTitle')}</h1>
           </div>
+          <div className="mb-4 rounded-lg border border-border bg-muted/40 p-3.5">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h2 className="text-sm font-semibold">{t('tokenGuideTitle')}</h2>
+              <Button type="button" variant="outline" size="sm" onClick={() => api?.open_external('https://www.figma.com/settings')}>
+                <ExternalLink className="size-3.5" aria-hidden="true" /> {t('tokenGuideOpen')}
+              </Button>
+            </div>
+            <ol className="mt-2.5 grid gap-1.5 text-sm leading-relaxed text-muted-foreground">
+              {['tokenGuideStep1', 'tokenGuideStep2', 'tokenGuideStep3'].map((key, index) => (
+                <li key={key} className="flex items-start gap-2.5">
+                  <span aria-hidden="true" className="grid size-5 shrink-0 place-items-center rounded-full bg-primary/10 text-[11px] font-bold text-brand-text">{index + 1}</span>
+                  <span>{t(key)}</span>
+                </li>
+              ))}
+            </ol>
+            <div className="mt-2.5 flex flex-wrap gap-1.5" dir="ltr">
+              {['folders:read', 'file_metadata:read', 'current_user:read'].map(scope => <code key={scope} className="rounded-md bg-background px-1.5 py-1 text-[11px] text-foreground ring-1 ring-border">{scope}</code>)}
+            </div>
+          </div>
           <form onSubmit={saveTokenContinue} className="grid gap-3">
-            <Label htmlFor="token-wizard">{t('tokenLabel')}</Label>
+            <Label htmlFor="token-wizard">{t('tokenPasteLabel')}</Label>
             <div className="relative">
               <Input id="token-wizard" type={showToken ? 'text' : 'password'} value={token} onInput={e => { setToken(e.currentTarget.value); setTokenError('') }} placeholder="figd_…" autoComplete="off" aria-invalid={!!tokenError} className="pe-10" />
               <button type="button" onClick={() => setShowToken(v => !v)} aria-label={showToken ? t('hideToken') : t('showToken')} aria-pressed={showToken} className="absolute inset-y-0 end-0 grid w-10 place-items-center rounded-e-md text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring">
@@ -713,13 +795,8 @@ function App() {
               </button>
             </div>
             {tokenError && <p role="alert" className="text-xs font-medium text-destructive">{tokenError}</p>}
-            <div className="space-y-1">
-              <p className="text-xs leading-relaxed text-muted-foreground">
-                {t('tokenHint')}{' '}
-                <button type="button" className="font-semibold text-brand-text hover:underline" onClick={() => api?.open_external('https://www.figma.com/settings')}>{t('tokenLink')}</button>
-              </p>
-              <p className="text-xs leading-relaxed text-muted-foreground">{t('tokenPrivacy')}</p>
-            </div>
+            <p className="text-xs leading-relaxed text-muted-foreground">{t('tokenPrivacy')}</p>
+            {hasToken && <p className="text-xs leading-relaxed text-muted-foreground">{t('savedTokenAvailable')}</p>}
             <div className="mt-1 flex flex-wrap items-center gap-1.5">
               <Select dir={rtl ? 'rtl' : 'ltr'} value={language} onValueChange={value => savePrefs({ language: value })}>
                 <SelectTrigger aria-label={t('language')} size="sm" className="min-w-28 text-xs"><SelectValue /></SelectTrigger>
@@ -730,9 +807,7 @@ function App() {
                 </SelectContent>
               </Select>
               <Button type="button" variant="ghost" size="sm" className="text-muted-foreground" onClick={openSettings}>{t('settings')}</Button>
-            </div>
-            <div className="mt-2 flex flex-wrap items-center justify-end gap-2">
-              <Button type="submit" disabled={!!busy}>{busy === 'token' ? <Spinner /> : null} {t('saveContinue')}</Button>
+              <Button type="submit" className="ms-auto" disabled={!!busy}>{busy === 'token' ? <Spinner /> : null} {hasToken && !token.trim() ? t('verifySavedToken') : t('saveContinue')}</Button>
             </div>
           </form>
         </>
@@ -749,17 +824,14 @@ function App() {
                 <Badge variant="success"><CheckCircle2 className="size-3" /> {t('verified')}</Badge>
               </div>
             )}
-            {setupBlocked && (
-              <BrowserSetupState phase={setupFailed ? 'failed' : 'setting_up'} message={browserSetup.message} escalated={setupEscalated} t={t} onRetry={retryBrowserSetup} busy={busy} progress={browserSetup} />
-            )}
+            {setupBlocked && <BrowserSetupState phase={setupFailed ? 'failed' : 'setting_up'} message={browserSetup.message} escalated={setupEscalated} t={t} onRetry={retryBrowserSetup} busy={busy} progress={browserSetup} />}
             <div className="mt-2 flex flex-wrap items-center justify-end gap-2">
-              <Button variant="ghost" onClick={completeSetup}>{t('signinLater')}</Button>
-              {!setupFailed && (
-                <Button onClick={signInNow} disabled={!!busy || setupPending}>
-                  {busy === 'sign-in' ? <Spinner /> : loginOpen ? <CheckCircle2 className="size-4" aria-hidden="true" /> : <ExternalLink className="size-4" aria-hidden="true" />}
-                  {loginOpen ? t('iveSignedIn') : t('openSignIn')}
-                </Button>
-              )}
+              <Button variant="outline" onClick={signInNow} disabled={!!busy || setupBlocked}>
+                {busy === 'sign-in' ? <Spinner /> : <ExternalLink className="size-4" aria-hidden="true" />} {t('openSignIn')}
+              </Button>
+              <Button onClick={completeSetup} disabled={!!busy || setupBlocked}>
+                {busy === 'sign-in-check' ? <Spinner /> : <CheckCircle2 className="size-4" aria-hidden="true" />} {t('verifySignIn')}
+              </Button>
             </div>
           </div>
         </>
@@ -816,7 +888,7 @@ function App() {
     }
     if (item.status === 'done' && item.runPath) {
       return (
-        <button type="button" onClick={() => api.open_path(item.runPath)} aria-label={t('showInFolder')} title={t('showInFolder')} className={rowBtn + ' hidden group-hover:grid group-focus-within:grid'}>
+        <button type="button" onClick={() => api.open_path(item.runPath).catch(err => toast.error(firstLine(err), { id: 'app-notice' }))} aria-label={t('showInFolder')} title={t('showInFolder')} className={rowBtn + ' hidden group-hover:grid group-focus-within:grid'}>
           <FolderInput className="size-3.5" aria-hidden="true" />
         </button>
       )
@@ -919,7 +991,12 @@ function App() {
 
       <header
         className="pywebview-drag-region sticky top-0 z-30 border-b bg-background/80 backdrop-blur relative"
-        onDoubleClick={nativeWin ? () => window.pywebview.api.toggle_maximize_window() : undefined}
+        onDoubleClick={nativeWin ? (event) => {
+          // Only the drag surface itself maximizes; double-clicking header
+          // buttons (Downloads, Settings, Select) must not toggle the window.
+          if (event.target.closest('button, a, input, select, textarea')) return
+          window.pywebview.api.toggle_maximize_window()
+        } : undefined}
       >
         {nativeWin && (
           <div dir="ltr" className="absolute inset-y-0 right-0 z-10">
@@ -964,7 +1041,7 @@ function App() {
         </div>
       </header>
 
-      <main id="main" className={'mx-auto w-full max-w-[680px] flex-1 ' + (view === 'wizard' ? 'px-4 pt-7 pb-10' : 'px-2 pt-4 pb-8')}>
+      <main id="main" className={'mx-auto w-full max-w-[680px] flex-1 ' + (view === 'wizard' ? 'px-4 pt-5 pb-6' : 'px-2 pt-4 pb-8')}>
         {error && (
           <div role="alert" className="mb-4 flex items-start gap-2.5 rounded-lg border border-[var(--figma-color-border-danger)] bg-[var(--figma-color-bg-danger-tertiary)] px-3.5 py-2.5 text-sm text-destructive">
             <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
@@ -1107,7 +1184,7 @@ function App() {
                     <p className="text-sm font-semibold text-brand-text">{t('signInTitle')}</p>
                     <p className="mt-0.5 max-w-md text-xs leading-relaxed text-muted-foreground">{t('signinCopy')}</p>
                   </div>
-                  <Button size="sm" onClick={() => openWizard('signin')}><ExternalLink className="size-3.5" /> {t('openSignIn')}</Button>
+                  <Button size="sm" onClick={() => openWizard('browser')}><RotateCcw className="size-3.5" /> {t('redoSetup')}</Button>
                 </div>
               )}
               <div>
@@ -1121,16 +1198,16 @@ function App() {
                   </button>
                 ))}
               </div>
-              {!teams.length && teamsTimeout && busy !== 'teams' && (
+              {!teams.length && teamsError && busy !== 'teams' && (
                 <div className="flex flex-col items-center gap-3 px-3 py-8 text-center text-sm leading-relaxed text-muted-foreground text-pretty">
-                  {t('teamsTimeout')}
+                  {teamsError}
                   <Button variant="outline" size="sm" onClick={() => discover()}><RefreshCw className="size-3.5" /> {t('retry')}</Button>
                 </div>
               )}
-              {!teams.length && setupPending && !teamsTimeout && (
+              {!teams.length && setupPending && !teamsError && (
                 <div role="status" className="px-3 py-8 text-center text-sm text-muted-foreground">{t('teamsPending')}</div>
               )}
-              {!teams.length && !setupBlocked && busy !== 'teams' && !teamsTimeout && (
+              {!teams.length && !setupBlocked && busy !== 'teams' && !teamsError && (
                 <div className="px-3 py-8 text-center text-sm text-muted-foreground">{t('noTeams')}</div>
               )}
             </div>
@@ -1176,7 +1253,7 @@ function App() {
                     <FileIcon editorType={value.editorType} data-row-tile="" />
                     <span className="min-w-28 flex-1 break-words text-sm font-medium leading-snug [overflow-wrap:anywhere]"><bdi>{value.name}</bdi></span>
                     <Button variant="outline" size="sm" onClick={event => { flyToQueue(event.currentTarget.closest('[data-download-row]')?.querySelector('[data-row-tile]'), { describe: n => n === 1 ? t('queuedOne', { name: value.name }) : t('queuedMany', { count: n }) }); startDownload({ scope: 'file', folder, file_key: value.key, name: value.name, editor_type: value.editorType }) }} disabled={!!busy} aria-label={t('ariaDownloadItem', { name: value.name })}>
-                      {busy === 'download' ? <Spinner /> : <Download className="size-3.5" />} {t('downloadFile')}
+                      <Download className="size-3.5" aria-hidden="true" /> {t('downloadFile')}
                     </Button>
                   </div>
                 ))}

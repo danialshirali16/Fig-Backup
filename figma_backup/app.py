@@ -21,10 +21,46 @@ from .core import APP_SUPPORT, BrowserAuthError, DOWNLOADS, SUPPORT, ArchiveInde
 SUPPORTED_EDITOR_TYPES = ("figma", "figjam", "slides")
 
 
+def _reveal_in_explorer(path: Path) -> None:
+    """Open a file's parent in Explorer and select it, including Unicode names."""
+    ole32 = ctypes.windll.ole32
+    shell32 = ctypes.windll.shell32
+    ole32.CoInitialize.argtypes = [ctypes.c_void_p]
+    ole32.CoInitialize.restype = ctypes.c_long
+    ole32.CoUninitialize.argtypes = []
+    ole32.CoTaskMemFree.argtypes = [ctypes.c_void_p]
+    shell32.SHParseDisplayName.argtypes = [ctypes.c_wchar_p, ctypes.c_void_p,
+                                           ctypes.POINTER(ctypes.c_void_p), ctypes.c_ulong,
+                                           ctypes.POINTER(ctypes.c_ulong)]
+    shell32.SHParseDisplayName.restype = ctypes.c_long
+    shell32.SHOpenFolderAndSelectItems.argtypes = [ctypes.c_void_p, ctypes.c_uint,
+                                                   ctypes.c_void_p, ctypes.c_ulong]
+    shell32.SHOpenFolderAndSelectItems.restype = ctypes.c_long
+    initialized = ole32.CoInitialize(None)
+    changed_mode = ctypes.c_long(0x80010106).value
+    if initialized < 0 and initialized != changed_mode:
+        raise FigmaError(f"Windows could not initialize Explorer (0x{initialized & 0xffffffff:08X})")
+    pidl = ctypes.c_void_p()
+    try:
+        result = shell32.SHParseDisplayName(str(path), None, ctypes.byref(pidl), 0, None)
+        if result < 0:
+            raise FigmaError(f"Windows could not locate the downloaded file (0x{result & 0xffffffff:08X})")
+        result = shell32.SHOpenFolderAndSelectItems(pidl, 0, None, 0)
+        if result < 0:
+            raise FigmaError(f"Windows could not reveal the downloaded file (0x{result & 0xffffffff:08X})")
+    finally:
+        if pidl.value:
+            ole32.CoTaskMemFree(pidl)
+        if initialized >= 0:
+            ole32.CoUninitialize()
+
+
 class Bridge:
     def __init__(self):
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="figma-browser")
         self.browser = Browser()
+        self.browser_verified = False
+        self.token_verified = False
         self.token_store = TokenStore()
         self.preferences_store = PreferencesStore()
         self.token = os.environ.get("FIGMA_PAT") or self.token_store.load()
@@ -34,7 +70,9 @@ class Bridge:
                       "saved": 0, "existing": 0, "skipped": 0, "failed": 0,
                       "message": "", "warning": "", "finished": False}
         # Kept outside self.state: start_download replaces that dict wholesale.
-        self.browser_state = {"phase": "ready" if chromium_ready() else "missing", "message": ""}
+        system = self.browser.system_browsers()
+        self.browser_state = {"phase": "ready" if system or chromium_ready() else "missing",
+                              "message": "", "source": system[0][0] if system else "chromium"}
         self.maximized = False
         self.stop_requested = False
 
@@ -80,6 +118,13 @@ class Bridge:
 
     def _browser_status(self) -> dict:
         browser = dict(self.browser_state)
+        if getattr(self.browser, "installing", False):
+            browser = {"phase": "setting_up", "message": "", "source": "chromium"}
+        elif browser.get("phase") == "ready" and getattr(self.browser, "install_error", ""):
+            browser = {"phase": "failed", "message": self.browser.install_error, "source": "chromium"}
+        channel = getattr(self.browser, "active_channel", None)
+        if channel and not getattr(self.browser, "installing", False):
+            browser = {"phase": "ready", "message": "", "source": channel}
         if browser.get("phase") == "setting_up":
             browser.update(self.browser.install_progress())
         return browser
@@ -111,14 +156,39 @@ class Bridge:
     def _run_install(self) -> None:
         try:
             self.browser._install_chromium()
+            if not chromium_ready():
+                raise FigmaError("Chromium installation finished, but the required browser files are missing")
+            self.browser.install_error = ""
             with self.lock:
-                self.browser_state = {"phase": "ready", "message": ""}
+                self.browser_state = {"phase": "ready", "message": "", "source": "chromium"}
         except Exception as error:
             with self.lock:
                 self.browser_state = {"phase": "failed", "message": str(error).splitlines()[0]}
 
     def save_preferences(self, changes: dict) -> dict:
+        if not isinstance(changes, dict) or "onboarding_complete" in changes or "setup_version" in changes:
+            raise FigmaError("Setup completion must be verified")
         return self.preferences_store.save(changes)
+
+    def begin_setup(self) -> dict:
+        self.browser_verified = False
+        self.token_verified = False
+        return {"preferences": self.preferences_store.save({"onboarding_complete": False, "setup_version": 0})}
+
+    def verify_browser(self) -> dict:
+        self.browser_verified = False
+        try:
+            self.executor.submit(self.browser.open, True).result()
+            channel = self.browser.active_channel
+            self.executor.submit(self.browser.close).result()
+            with self.lock:
+                self.browser_state = {"phase": "ready", "message": "", "source": channel}
+            self.browser_verified = True
+            return {"ready": True, "source": channel}
+        except Exception as error:
+            with self.lock:
+                self.browser_state = {"phase": "failed", "message": str(error).splitlines()[0]}
+            raise
 
     def save_token(self, token: str) -> dict:
         token = token.strip()
@@ -126,13 +196,41 @@ class Bridge:
             raise FigmaError("Token cannot be empty")
         candidate = FigmaClient(token)
         user = candidate.me()
+        setup_required = self.token != token and self.preferences_store.load()["setup_version"] == 2
         self.token_store.save(token)
         self.token, self.client = token, candidate
+        if setup_required:
+            self.begin_setup()
+        else:
+            self.token_verified = True
+        return {"name": user.get("handle") or user.get("email") or "Figma",
+                "setup_required": setup_required}
+
+    def verify_token(self) -> dict:
+        self.token_verified = False
+        user = self._required().me()
+        self.token_verified = True
         return {"name": user.get("handle") or user.get("email") or "Figma"}
 
     def open_sign_in(self) -> dict:
         self.executor.submit(self.browser.open_sign_in).result()
+        with self.lock:
+            self.browser_state = {"phase": "ready", "message": "",
+                                  "source": self.browser.active_channel}
         return {"opened": True}
+
+    def close_sign_in(self) -> dict:
+        self.executor.submit(self.browser.close_sign_in).result()
+        return {"closed": True}
+
+    def complete_setup(self) -> dict:
+        if not self.browser_verified or not self.token_verified:
+            raise FigmaError("Verify the browser and access token before completing setup")
+        signed_in = self.executor.submit(self.browser.verify_sign_in).result()
+        if not signed_in:
+            return {"completed": False}
+        preferences = self.preferences_store.save({"onboarding_complete": True, "setup_version": 2})
+        return {"completed": True, "preferences": preferences}
 
     def discover_teams(self) -> dict:
         self._required()
@@ -166,21 +264,44 @@ class Bridge:
     def files(self, folder_id: str) -> dict:
         client = self._required()
         files = client.files(folder_id)
-        # The listings don't expose the editor type; resolve it (cached per key)
-        # so the UI can show the right file-type icon.
-        for file in files:
-            if not file.get("key") or file.get("editorType") or file.get("editor_type"):
-                continue
-            try:
-                kind = client.editor_type(file)
+        self._resolve_editor_types(client, files)
+        return {"files": files, "unavailable": str(folder_id) in client.unavailable_subfolders}
+
+    @staticmethod
+    def _resolve_editor_types(client: FigmaClient, files: list[dict]) -> None:
+        """Fill in each file's editor type (cached per key) for the file-type icons.
+
+        A large folder is one API call per file; four workers keep the browse
+        fast without bursting into Figma's rate limit. On a confirmed 429 the
+        remaining lookups are dropped — icons fall back and the download path
+        resolves types itself.
+        """
+        pending = [file for file in files
+                   if file.get("key") and not (file.get("editorType") or file.get("editor_type"))]
+        if not pending:
+            return
+        pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="figma-meta")
+        try:
+            futures = [(pool.submit(client.editor_type, file), file) for file in pending]
+            for future, file in futures:
+                try:
+                    kind = future.result()
+                except FigmaError as error:
+                    if error.status == 429:
+                        break
+                    continue
+                except Exception:
+                    continue
                 if kind:
                     file["editorType"] = kind
-            except FigmaError:
-                continue
-        return {"files": files, "unavailable": str(folder_id) in client.unavailable_subfolders}
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
 
     def start_download(self, selection: dict) -> dict:
         self._required()
+        preferences = self.preferences_store.load()
+        if not preferences["onboarding_complete"] or preferences["setup_version"] != 2:
+            raise FigmaError("Complete all three setup steps before downloading")
         if not isinstance(selection, dict) or selection.get("scope") not in ("team", "folder", "file"):
             raise FigmaError("Choose a team, folder, or file to download")
         team = selection.get("team")
@@ -235,7 +356,7 @@ class Bridge:
                 files, folder_paths = client.walk_tree(roots)
                 index = TreeArchiveIndex(team)
                 index.prepare_folders(folder_paths)
-                destination = str(index.root)
+                destination = str(index.folder_path([selection["folder"]])) if scope == "folder" else str(index.root)
             items = [{"key": file["key"], "name": file.get("name") or "Untitled", "status": "queued", "detail": ""}
                      for file in files if file.get("key")]
             self._set(items=items, total=len(items), phase="downloading",
@@ -289,7 +410,9 @@ class Bridge:
                         self.state["failed"] += 1
             with self.lock:
                 if self.state["phase"] == "downloading":
-                    self.state["phase"] = "done"
+                    # A stop requested during scanning (or under the last file)
+                    # must not report the run as completed.
+                    self.state["phase"] = "stopped" if self.stop_requested else "done"
                 self.state["warning"] = (
                     f"Figma did not expose subfolders for {len(client.unavailable_subfolders)} folder(s); this backup may be incomplete."
                     if client.unavailable_subfolders else ""
@@ -330,7 +453,7 @@ class Bridge:
             if target.is_dir():
                 os.startfile(str(target))
             else:
-                subprocess.Popen(["explorer", f"/select,{target}"], creationflags=subprocess.CREATE_NO_WINDOW)
+                _reveal_in_explorer(target)
         elif target.is_dir():
             subprocess.Popen(["open", str(target)])
         else:

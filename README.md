@@ -34,19 +34,21 @@ Get the [**latest release**](https://github.com/danialshirali16/Fig-Backup/relea
 
 Every release also ships a `SHA256SUMS.txt` with checksums for both files.
 
-On first launch, Fig Backup downloads Chromium (about 150 MB) to run the backup browser. The macOS
+Fig Backup uses Chrome or Edge already installed on your computer when available. If neither can
+run, it downloads Chromium and its headless build (about 325 MB total). The macOS
 app is unsigned, so you may need to right-click it and choose **Open**. For installation help, see
 [Troubleshooting](docs/TROUBLESHOOTING.md).
 
 ## Get started
 
-1. Create a Figma Personal Access Token with `folders:read` and `file_metadata:read` permissions
-   (older tokens with `projects:read` also work).
-2. Open Fig Backup, paste the token, and sign in to Figma in the browser window it opens.
+1. In Figma, open your account menu → **Settings** → **Security** → **Personal access tokens** →
+   **Generate new token**. Name it Fig Backup and enable `folders:read`, `file_metadata:read`, and
+   `current_user:read`. Copy the token immediately; Figma shows it only once. Older tokens with
+   `projects:read` can still use the legacy folder API.
+2. Open Fig Backup. Setup checks Chrome or Edge first and downloads Chromium only if needed. Verify the browser, paste and verify the token, then sign in to Figma and click **Verify sign-in**. The sign-in window closes; backups use a hidden browser.
 3. Choose a team. Select **Download all**, or use **Select** to pick specific folders and files.
 
-Browser sign-in is required before the first backup; you can postpone it during setup and the app
-will ask again when needed. After setup, backups run in the background.
+All three setup checks are required before the first backup. After setup, backups run in the background.
 
 ## What gets backed up?
 

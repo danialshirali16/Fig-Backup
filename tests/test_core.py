@@ -23,9 +23,11 @@ class CoreTests(unittest.TestCase):
     def test_preferences_defaults_and_validation(self):
         with tempfile.TemporaryDirectory() as directory:
             store = PreferencesStore(Path(directory) / 'Fig Backup')
-            self.assertEqual(store.load(), {'language': 'en', 'theme': 'system', 'onboarding_complete': False})
+            self.assertEqual(store.load(), {'language': 'en', 'theme': 'system', 'onboarding_complete': False, 'setup_version': 0})
             self.assertEqual(store.save({'language': 'fa', 'theme': 'dark'})['onboarding_complete'], False)
             self.assertEqual(store.save({'onboarding_complete': True})['language'], 'fa')
+            self.assertEqual(store.load()['setup_version'], 0)
+            self.assertEqual(store.save({'setup_version': 2})['setup_version'], 2)
             with self.assertRaises(FigmaError):
                 store.save({'theme': 'neon'})
 
@@ -46,6 +48,13 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(clean_name('  Test/A:B  '), 'Test_A_B')
         self.assertEqual(team_id_from_input('https://www.figma.com/team/1558645977231861977/abc'), '1558645977231861977')
         self.assertEqual(merge_teams([{'id': '1', 'name': '1'}], [{'id': '1', 'name': 'Danny'}]), [{'id': '1', 'name': 'Danny'}])
+
+    def test_windows_reserved_stems_get_a_suffix(self):
+        self.assertEqual(clean_name('CON'), 'CON_')
+        self.assertEqual(clean_name('con.fig design'), 'con_.fig design')
+        self.assertEqual(clean_name('LPT1'), 'LPT1_')
+        self.assertEqual(clean_name('Console'), 'Console')
+        self.assertEqual(clean_name('aux'), 'aux_')
 
     def test_team_avatar_survives_refresh_without_a_new_image(self):
         saved = [{'id': '1', 'name': 'Old name', 'avatar': 'data:image/png;base64,YQ=='}]

@@ -55,13 +55,16 @@ export function installPreviewBridge() {
   let failFirstRun = params.has('fail')
   let stopRun = null
   const lag = () => new Promise(resolve => window.setTimeout(resolve, slowMode ? 1200 : 0))
-  let browserState = fakeInstall ? { phase: 'setting_up', message: '' } : { phase: 'ready', message: '' }
+  let browserState = fakeInstall ? { phase: 'setting_up', message: '' } : { phase: 'ready', message: '', source: 'chrome' }
   if (fakeInstall) {
-    window.setTimeout(() => { browserState = { phase: 'ready', message: '' } }, 6000)
+    window.setTimeout(() => { browserState = { phase: 'ready', message: '', source: 'chromium' } }, 6000)
   }
   let fakeMaximized = false
 
-  let preferences = { language: 'en', theme: 'system', onboarding_complete: !params.has('fresh') }
+  let preferences = { language: 'en', theme: 'system', onboarding_complete: !params.has('fresh'), setup_version: params.has('fresh') ? 0 : 2 }
+  let browserVerified = false
+  let tokenVerified = false
+  let signedIn = false
   const previewTeams = [...teams]
   let status = idleStatus()
 
@@ -71,8 +74,31 @@ export function installPreviewBridge() {
       bootstrap: async () => ({ has_token: true, teams: previewTeams, preferences, browser: { ...browserState } }),
       discover_teams: async () => lag().then(() => ({ teams: previewTeams, auth_required: false })),
       save_preferences: async changes => (preferences = { ...preferences, ...changes }),
-      save_token: async () => ({ name: 'Preview user' }),
-      open_sign_in: async () => ({ opened: false }),
+      begin_setup: async () => {
+        browserVerified = false
+        tokenVerified = false
+        preferences = { ...preferences, onboarding_complete: false, setup_version: 0 }
+        return { preferences }
+      },
+      save_token: async () => {
+        const setupRequired = preferences.setup_version === 2
+        if (setupRequired) {
+          browserVerified = false
+          preferences = { ...preferences, onboarding_complete: false, setup_version: 0 }
+        }
+        tokenVerified = !setupRequired
+        return { name: 'Preview user', setup_required: setupRequired }
+      },
+      verify_token: async () => { tokenVerified = true; return { name: 'Preview user' } },
+      verify_browser: async () => { browserVerified = true; return { ready: true, source: browserState.source || 'chrome' } },
+      open_sign_in: async () => { signedIn = true; return { opened: true } },
+      close_sign_in: async () => ({ closed: true }),
+      complete_setup: async () => {
+        if (!browserVerified || !tokenVerified) throw new Error('Verify browser and token first')
+        if (!signedIn) return { completed: false }
+        preferences = { ...preferences, onboarding_complete: true, setup_version: 2 }
+        return { completed: true, preferences }
+      },
       install_browser: async () => ({ started: true }),
       minimize_window: async () => ({ ok: true }),
       toggle_maximize_window: async () => {
@@ -145,6 +171,7 @@ export function installPreviewBridge() {
       status: async () => ({ ...status, browser: { ...browserState } }),
       open_destination: async () => ({ opened: false }),
       open_downloads: async () => ({ opened: false }),
+      open_path: async () => ({ opened: false }),
     },
   }
 }

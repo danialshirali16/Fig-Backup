@@ -51,3 +51,11 @@ test('a skipped file cannot round incomplete progress up to 100 percent', () => 
   const item = { status: 'partial', filesDone: 999, filesTotal: 1000 }
   assert.equal(queueProgressPercent([item], null), 99)
 })
+
+test('an empty selection reports no supported files instead of zero files', () => {
+  const run = { phase: 'done', total: 0, skipped: 0, failed: 0, items: [] }
+  const item = summarizeDownloadRun(run, 'Folder', translate)
+  assert.equal(item.status, 'done')
+  assert.equal(item.detail, 'No supported files were found.')
+  assert.equal(item.filesDone, 0)
+})

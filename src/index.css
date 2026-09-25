@@ -149,8 +149,11 @@
   .native-mac-titlebar .app-header-inner { padding-left: 96px; }
 }
 
-/* Windows frameless titlebar: keep header actions clear of the caption buttons. */
-.native-win-titlebar .app-header-inner { padding-right: 144px; }
+/* Reserve only the part of the Windows caption controls that overlaps the
+   centered 680px content area. At wide sizes the header and main align. */
+.native-win-titlebar .app-header-inner {
+  padding-right: clamp(8px, calc(492px - 50vw), 152px);
+}
 
 /* Indeterminate bar for the one-time browser setup (no honest % exists, so
    the sweep never implies progress). RTL mirrors the sweep direction. */

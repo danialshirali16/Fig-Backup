@@ -1,13 +1,16 @@
+import ctypes
 import threading
 import time
+import tempfile
+import sys
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 from playwright._impl._errors import TargetClosedError
 
-from figma_backup.app import Bridge
-from figma_backup.core import BrowserAuthError, FigmaError
+from figma_backup.app import Bridge, _reveal_in_explorer
+from figma_backup.core import BrowserAuthError, FigmaError, PreferencesStore, TreeArchiveIndex
 
 
 class Client:
@@ -44,6 +47,24 @@ class Browser:
         return {'status': 'saved', 'path': '/tmp/A.fig', 'size': 2048}
 
 
+class EditorTypeClient:
+    def __init__(self, error=None):
+        self.unavailable_subfolders = set()
+        self.lock = threading.Lock()
+        self.calls = 0
+        self.error = error
+
+    def files(self, folder_id):
+        return [{'key': f'k{index}', 'name': f'F{index}'} for index in range(12)]
+
+    def editor_type(self, file):
+        with self.lock:
+            self.calls += 1
+        if self.error:
+            raise self.error
+        return 'figjam'
+
+
 class BridgeTests(unittest.TestCase):
     @staticmethod
     def make_bridge(browser):
@@ -69,6 +90,17 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual((state['saved'], state['skipped'], state['failed']), (2, 1, 0))
         self.assertEqual([item['status'] for item in state['items']], ['saved', 'saved', 'skipped'])
         self.assertTrue(state['warning'])
+
+    def test_folder_download_destination_is_selected_folder(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            downloads = root / 'Downloads'
+            bridge = self.make_bridge(Browser())
+            with patch('figma_backup.app.TreeArchiveIndex',
+                       side_effect=lambda team: TreeArchiveIndex(team, root / 'Support', downloads)):
+                bridge._run_download({'scope': 'folder', 'team': {'id': '10', 'name': 'Team'},
+                                      'folder': {'id': '44', 'name': 'Folder'}})
+            self.assertEqual(Path(bridge.status()['destination']), downloads / 'Fig Backup/Team/Folder')
 
     def test_browser_close_retries_once(self):
         class ClosingBrowser(Browser):
@@ -115,6 +147,38 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(state['phase'], 'done')
         self.assertEqual((state['failed'], state['saved']), (1, 1))
         self.assertEqual([item['status'] for item in state['items']], ['failed', 'saved'])
+
+    def test_stop_during_scan_reports_stopped(self):
+        class EmptyClient(Client):
+            def all_files(self, folder):
+                return []
+
+        bridge = self.make_bridge(Browser())
+        bridge.client = EmptyClient()
+        bridge.stop_requested = True
+        with patch('figma_backup.app.TreeArchiveIndex') as index:
+            index.return_value.root = Path('/tmp/Fig Backup/Team')
+            bridge._run_download({'scope': 'folder', 'team': {'id': '10', 'name': 'Team'},
+                                  'folder': {'id': '44', 'name': 'Folder'}})
+        state = bridge.status()
+        self.assertEqual(state['phase'], 'stopped')
+        self.assertFalse(state['running'])
+        self.assertTrue(state['finished'])
+
+    def test_files_listing_enriches_editor_types(self):
+        bridge = self.make_bridge(Browser())
+        client = EditorTypeClient()
+        bridge.client = client
+        result = bridge.files('44')
+        self.assertEqual([file.get('editorType') for file in result['files']], ['figjam'] * 12)
+        self.assertEqual(client.calls, 12)
+
+    def test_files_listing_survives_rate_limit(self):
+        bridge = self.make_bridge(Browser())
+        bridge.client = EditorTypeClient(error=FigmaError('Figma API HTTP 429: slow down', 429))
+        result = bridge.files('44')
+        self.assertEqual(len(result['files']), 12)
+        self.assertTrue(all('editorType' not in file for file in result['files']))
 
     def test_browser_auth_error_stops_queue_with_attention(self):
         class AuthRequiredBrowser(Browser):
@@ -165,6 +229,43 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(exits, [0])
 
 
+@unittest.skipUnless(sys.platform == 'win32', 'Windows Explorer integration')
+class RevealDownloadTests(unittest.TestCase):
+    def test_windows_shell_parses_unicode_filename_for_selection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            file = Path(directory) / '☄️  Hyper Design.fig'
+            file.touch()
+            with patch.object(ctypes.windll.shell32, 'SHOpenFolderAndSelectItems', return_value=0) as open_selected:
+                _reveal_in_explorer(file)
+            self.assertEqual(open_selected.call_count, 1)
+            self.assertEqual(open_selected.call_args.args[1:], (0, None, 0))
+            self.assertTrue(open_selected.call_args.args[0])
+
+    def test_reveals_exact_file_with_spaces_and_unicode(self):
+        with tempfile.TemporaryDirectory() as directory:
+            downloads = Path(directory) / 'Downloads'
+            downloads.mkdir()
+            file = downloads / '☄️  Hyper Design.fig'
+            file.touch()
+            with patch('figma_backup.app.DOWNLOADS', downloads), \
+                 patch('figma_backup.app._reveal_in_explorer') as reveal:
+                self.assertEqual(Bridge.__new__(Bridge).open_path(str(file)), {'opened': True})
+            reveal.assert_called_once_with(file.resolve())
+
+    def test_rejects_paths_outside_downloads(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            downloads = root / 'Downloads'
+            downloads.mkdir()
+            other = root / 'other.fig'
+            other.touch()
+            with patch('figma_backup.app.DOWNLOADS', downloads), \
+                 patch('figma_backup.app._reveal_in_explorer') as reveal:
+                with self.assertRaisesRegex(FigmaError, 'outside Downloads'):
+                    Bridge.__new__(Bridge).open_path(str(other))
+            reveal.assert_not_called()
+
+
 class InstallerBrowser:
     def __init__(self, fail=False):
         self.release = threading.Event()
@@ -191,6 +292,19 @@ class BrowserInstallTests(unittest.TestCase):
     def tearDown(self):
         self.executor.shutdown(wait=True)
 
+    def test_installed_browser_skips_initial_chromium_setup(self):
+        with patch('figma_backup.app.Browser') as browser_class, \
+             patch('figma_backup.app.TokenStore') as token_class, \
+             patch('figma_backup.app.chromium_ready', return_value=False):
+            browser_class.return_value.system_browsers.return_value = [('chrome', Path('chrome.exe'))]
+            token_class.return_value.load.return_value = None
+            bridge = Bridge()
+        try:
+            self.assertEqual(bridge.browser_state['phase'], 'ready')
+            self.assertEqual(bridge.browser_state['source'], 'chrome')
+        finally:
+            bridge.executor.shutdown(wait=False)
+
     def settle(self, bridge, phase, timeout=5.0):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
@@ -206,24 +320,55 @@ class BrowserInstallTests(unittest.TestCase):
         self.assertEqual(bridge.status()['browser'],
                          {'phase': 'setting_up', 'message': '', 'done': 0, 'total': 0})
 
+    def test_system_browser_fallback_exposes_install_progress_and_error(self):
+        browser = InstallerBrowser()
+        bridge = BridgeTests.make_bridge(browser)
+        bridge.browser_state = {'phase': 'ready', 'message': '', 'source': 'chrome'}
+        browser.installing = True
+        self.assertEqual(bridge.status()['browser']['phase'], 'setting_up')
+        browser.installing = False
+        browser.install_error = 'Chromium download failed'
+        self.assertEqual(bridge.status()['browser']['phase'], 'failed')
+        self.assertEqual(bridge.status()['browser']['message'], 'Chromium download failed')
+
+    def test_successful_system_browser_recovers_failed_install_state(self):
+        browser = InstallerBrowser()
+        bridge = BridgeTests.make_bridge(browser)
+        bridge.browser_state = {'phase': 'failed', 'message': 'Chromium download failed'}
+        browser.active_channel = 'msedge'
+        self.assertEqual(bridge.status()['browser'],
+                         {'phase': 'ready', 'message': '', 'source': 'msedge'})
+
     def test_install_success_marks_ready(self):
         browser = InstallerBrowser()
         bridge = BridgeTests.make_bridge(browser)
         bridge.executor = self.executor
-        self.assertEqual(bridge.install_browser(), {'started': True})
-        self.assertEqual(bridge.status()['browser']['phase'], 'setting_up')
-        browser.release.set()
-        self.settle(bridge, 'ready')
+        with patch('figma_backup.app.chromium_ready', return_value=True):
+            self.assertEqual(bridge.install_browser(), {'started': True})
+            self.assertEqual(bridge.status()['browser']['phase'], 'setting_up')
+            browser.release.set()
+            self.settle(bridge, 'ready')
 
     def test_double_install_is_guarded(self):
         browser = InstallerBrowser()
         bridge = BridgeTests.make_bridge(browser)
         bridge.executor = self.executor
-        self.assertEqual(bridge.install_browser(), {'started': True})
-        self.assertEqual(bridge.install_browser(), {'started': False})
-        browser.release.set()
-        self.settle(bridge, 'ready')
+        with patch('figma_backup.app.chromium_ready', return_value=True):
+            self.assertEqual(bridge.install_browser(), {'started': True})
+            self.assertEqual(bridge.install_browser(), {'started': False})
+            browser.release.set()
+            self.settle(bridge, 'ready')
         self.assertEqual(browser.calls, 1)
+
+    def test_install_does_not_mark_incomplete_browser_ready(self):
+        browser = InstallerBrowser()
+        bridge = BridgeTests.make_bridge(browser)
+        bridge.executor = self.executor
+        with patch('figma_backup.app.chromium_ready', return_value=False):
+            bridge.install_browser()
+            browser.release.set()
+            self.settle(bridge, 'failed')
+        self.assertIn('required browser files are missing', bridge.status()['browser']['message'])
 
     def test_install_failure_carries_message(self):
         browser = InstallerBrowser(fail=True)
@@ -233,6 +378,90 @@ class BrowserInstallTests(unittest.TestCase):
         browser.release.set()
         self.settle(bridge, 'failed')
         self.assertEqual(bridge.status()['browser']['message'], 'Automatic Chromium installation failed: offline')
+
+
+class RequiredSetupTests(unittest.TestCase):
+    def test_browser_check_failure_blocks_first_step(self):
+        class BrokenBrowser:
+            def open(self, headless):
+                raise RuntimeError('browser could not start')
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            bridge = Bridge.__new__(Bridge)
+            bridge.executor = executor
+            bridge.browser = BrokenBrowser()
+            bridge.lock = threading.Lock()
+            bridge.browser_state = {'phase': 'ready', 'message': ''}
+            bridge.browser_verified = False
+            with self.assertRaisesRegex(RuntimeError, 'browser could not start'):
+                bridge.verify_browser()
+            self.assertFalse(bridge.browser_verified)
+            self.assertEqual(bridge.browser_state['phase'], 'failed')
+
+    def test_completion_requires_browser_token_and_real_sign_in(self):
+        class SetupBrowser:
+            active_channel = None
+            signed_in = False
+
+            def open(self, headless):
+                self.active_channel = 'chrome'
+
+            def close(self):
+                pass
+
+            def verify_sign_in(self):
+                return self.signed_in
+
+        with tempfile.TemporaryDirectory() as directory, ThreadPoolExecutor(max_workers=1) as executor:
+            bridge = Bridge.__new__(Bridge)
+            bridge.executor = executor
+            bridge.browser = SetupBrowser()
+            bridge.browser_verified = False
+            bridge.token_verified = False
+            bridge.browser_state = {'phase': 'ready', 'message': '', 'source': 'chrome'}
+            bridge.lock = threading.Lock()
+            bridge.client = type('Client', (), {'me': lambda self: {'handle': 'Tester'}})()
+            bridge.preferences_store = PreferencesStore(Path(directory))
+
+            with self.assertRaisesRegex(FigmaError, 'Setup completion must be verified'):
+                bridge.save_preferences({'onboarding_complete': True})
+            with self.assertRaisesRegex(FigmaError, 'Verify the browser'):
+                bridge.complete_setup()
+            with self.assertRaisesRegex(FigmaError, 'Complete all three setup steps'):
+                bridge.start_download({'scope': 'team', 'team': {'id': '1'}})
+            self.assertEqual(bridge.verify_browser(), {'ready': True, 'source': 'chrome'})
+            with self.assertRaisesRegex(FigmaError, 'Verify the browser'):
+                bridge.complete_setup()
+            self.assertEqual(bridge.verify_token(), {'name': 'Tester'})
+            self.assertEqual(bridge.complete_setup(), {'completed': False})
+            self.assertEqual(bridge.preferences_store.load()['setup_version'], 0)
+            bridge.browser.signed_in = True
+            result = bridge.complete_setup()
+            self.assertTrue(result['completed'])
+            self.assertTrue(result['preferences']['onboarding_complete'])
+            self.assertEqual(result['preferences']['setup_version'], 2)
+            reset = bridge.begin_setup()
+            self.assertFalse(reset['preferences']['onboarding_complete'])
+            self.assertEqual(reset['preferences']['setup_version'], 0)
+            with self.assertRaisesRegex(FigmaError, 'Verify the browser'):
+                bridge.complete_setup()
+
+    def test_replacing_token_restarts_required_setup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            bridge = Bridge.__new__(Bridge)
+            bridge.preferences_store = PreferencesStore(Path(directory))
+            bridge.preferences_store.save({'onboarding_complete': True, 'setup_version': 2})
+            bridge.token_store = type('Store', (), {'save': lambda self, token: None})()
+            bridge.token = 'old-token'
+            bridge.browser_verified = True
+            bridge.token_verified = True
+            client = type('Client', (), {'me': lambda self: {'handle': 'Tester'}})()
+            with patch('figma_backup.app.FigmaClient', return_value=client):
+                result = bridge.save_token('new-token')
+            self.assertTrue(result['setup_required'])
+            self.assertFalse(bridge.preferences_store.load()['onboarding_complete'])
+            self.assertFalse(bridge.browser_verified)
+            self.assertFalse(bridge.token_verified)
 
 
 if __name__ == '__main__':

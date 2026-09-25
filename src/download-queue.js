@@ -15,7 +15,11 @@ export function summarizeDownloadRun(status, queueName, translate) {
 
   return {
     status: runStatus,
-    detail: failed ? downloadFailureDescription(status, queueName, translate) : skipped ? skippedDetail : '',
+    detail: failed
+      ? downloadFailureDescription(status, queueName, translate)
+      : skipped
+        ? skippedDetail
+        : filesTotal === 0 ? translate('queueEmpty') : '',
     bytes: doneFiles.reduce((sum, file) => sum + (file.size || 0), 0),
     filesDone: doneFiles.length,
     filesTotal,
