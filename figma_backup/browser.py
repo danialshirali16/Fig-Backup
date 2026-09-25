@@ -63,10 +63,18 @@ class Browser:
         if not headless or not self.use_headless_shell:
             options["channel"] = "chromium"
         if headless:
-            version = subprocess.run([str(browser_binary), "--version"],
-                                     check=True, capture_output=True, text=True,
-                                     creationflags=SUBPROCESS_FLAGS).stdout
-            match = re.search(r"(\d+\.\d+\.\d+\.\d+)", version)
+            reported = ""
+            try:
+                reported = subprocess.run([str(browser_binary), "--version"],
+                                          capture_output=True, text=True, timeout=30,
+                                          creationflags=SUBPROCESS_FLAGS).stdout
+            except Exception:
+                pass  # chrome.exe is GUI-subsystem on Windows: --version prints nothing
+            match = re.search(r"(\d+\.\d+\.\d+\.\d+)", reported)
+            if not match:
+                entry = Browser._manifest_entry("chromium")
+                match = re.search(r"(\d+\.\d+\.\d+\.\d+)",
+                                  (entry or {}).get("browserVersion", ""))
             if not match:
                 raise FigmaError("Could not determine the Chromium version")
             platform_agent = "Windows NT 10.0; Win64; x64" if sys.platform == "win32" else "Macintosh; Intel Mac OS X 10_15_7"
@@ -143,11 +151,11 @@ class Browser:
         0 on any failure to measure; the UI then stays indeterminate.
         """
         try:
-            _, cli = compute_driver_executable()
-            manifest = json.loads((Path(cli).parent / "browsers.json").read_text(encoding="utf-8"))
             pending = 0
             for name in ("chromium", "chromium-headless-shell"):
-                entry = next(b for b in manifest["browsers"] if b["name"] == name)
+                entry = cls._manifest_entry(name)
+                if not entry:
+                    continue
                 dest = cls.browser_cache_dir() / f"{name}-{entry['revision']}"
                 if (dest / "INSTALLATION_COMPLETE").exists():
                     continue
@@ -160,9 +168,9 @@ class Browser:
     @classmethod
     def _ensure_browser(cls, host: str, name: str) -> None:
         """Fetch one browser build from a download host and unpack it."""
-        _, cli = compute_driver_executable()
-        manifest = json.loads((Path(cli).parent / "browsers.json").read_text(encoding="utf-8"))
-        entry = next(b for b in manifest["browsers"] if b["name"] == name)
+        entry = cls._manifest_entry(name)
+        if not entry:
+            raise RuntimeError(f"{name} is missing from the bundled browsers.json")
         archive, top = cls._cft_archive(name, entry["browserVersion"])
         dest = cls.browser_cache_dir() / f"{name}-{entry['revision']}"
         if (dest / "INSTALLATION_COMPLETE").exists():
@@ -338,16 +346,23 @@ class Browser:
         except Exception:
             return False
 
-    @staticmethod
-    def _chromium_archive_path() -> str | None:
-        """Path of the pinned chromium zip under any Playwright download host."""
+    @classmethod
+    def _manifest_entry(cls, name: str) -> dict | None:
+        """One browser entry from the bundled driver's browsers.json."""
         try:
             _, cli = compute_driver_executable()
-            manifest = (Path(cli).parent / "browsers.json").read_text(encoding="utf-8")
-            entry = next(b for b in json.loads(manifest)["browsers"] if b["name"] == "chromium")
-            version = entry["browserVersion"]
+            manifest = json.loads((Path(cli).parent / "browsers.json").read_text(encoding="utf-8"))
+            return next((b for b in manifest["browsers"] if b["name"] == name), None)
         except Exception:
             return None
+
+    @classmethod
+    def _chromium_archive_path(cls) -> str | None:
+        """Path of the pinned chromium zip under any Playwright download host."""
+        entry = cls._manifest_entry("chromium")
+        if not entry:
+            return None
+        version = entry["browserVersion"]
         if sys.platform == "win32":
             return f"builds/cft/{version}/win64/chrome-win64.zip"
         if sys.platform == "darwin":
