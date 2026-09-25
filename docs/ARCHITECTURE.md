@@ -163,8 +163,8 @@ contributes one complete queue item. Skipped and failed files do not increase th
 
 `build-mac.sh` runs PyInstaller (`--windowed --onedir --icon app-icon.icns`) with the built
 `dist/` embedded as data and `playwright`/`webview` collected. `app-icon.icns` is generated from
-the opaque `app-icon-macos.png` with `sips` + `iconutil` on every build. `app-icon.png`
-is the artwork source for both the macOS variant and the multi-size Windows `.ico`.
+`app-icon.png` with `sips` + `iconutil` on every build; `app-icon.png` is the artwork source for
+both the macOS variant and the multi-size Windows `.ico`.
 
 On Cocoa, `app.py` extends the content view into a transparent titlebar and hides the duplicate
 native title while retaining the standard window controls. The web header supplies drag regions;

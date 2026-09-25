@@ -5,7 +5,7 @@ app_dir="$(cd -P "$(dirname "$0")" && pwd)"
 cd "$app_dir"
 
 iconset_dir="$app_dir/.build/AppIcon.iconset"
-mac_icon="$app_dir/app-icon-macos.png"
+mac_icon="$app_dir/app-icon.png"
 mkdir -p "$iconset_dir"
 for size in 16 32 128 256 512; do
   sips -s format png -z "$size" "$size" "$mac_icon" \
