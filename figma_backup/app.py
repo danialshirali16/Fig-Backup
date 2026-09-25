@@ -9,6 +9,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from urllib.parse import urlparse
 
 import webview
 from playwright._impl._errors import TargetClosedError
@@ -64,6 +65,25 @@ class Bridge:
         ctypes.windll.user32.SendMessageW(int(window.native.Handle), WM_NCLBUTTONDOWN, edge, 0)
         return {"ok": True}
 
+    def open_external(self, url: str) -> dict:
+        """Open an allowlisted https URL in the user's default browser."""
+        parsed = urlparse(url or "")
+        if parsed.scheme != "https" or parsed.hostname not in ("figma.com", "www.figma.com"):
+            raise FigmaError("Only figma.com links can be opened externally")
+        if sys.platform == "win32":
+            os.startfile(url)  # noqa: S606 - shell-open of an allowlisted https URL
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", url])
+        else:
+            subprocess.Popen(["xdg-open", url])
+        return {"ok": True}
+
+    def _browser_status(self) -> dict:
+        browser = dict(self.browser_state)
+        if browser.get("phase") == "setting_up":
+            browser.update(self.browser.install_progress())
+        return browser
+
     def _required(self) -> FigmaClient:
         if not self.client:
             raise FigmaError("Add a Personal Access Token first")
@@ -78,7 +98,7 @@ class Bridge:
         return {"has_token": bool(self.token), "downloads": str(DOWNLOADS),
                 "teams": read_json(SUPPORT / "teams.json", []),
                 "preferences": self.preferences_store.load(),
-                "browser": dict(self.browser_state), "version": "0.3.0"}
+                "browser": self._browser_status(), "version": "0.3.0"}
 
     def install_browser(self) -> dict:
         with self.lock:
@@ -191,7 +211,7 @@ class Bridge:
     def status(self) -> dict:
         with self.lock:
             return {**self.state, "items": [item.copy() for item in self.state["items"]],
-                    "browser": dict(self.browser_state)}
+                    "browser": self._browser_status()}
 
     def _set(self, **changes) -> None:
         with self.lock:

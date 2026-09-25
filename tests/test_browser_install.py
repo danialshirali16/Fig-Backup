@@ -1,7 +1,10 @@
+import io
+import json
 import platform
 import sys
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from subprocess import CalledProcessError
 from unittest.mock import patch
@@ -118,6 +121,41 @@ class FallbackSourceTests(unittest.TestCase):
         with patch.object(Browser, '_ordered_hosts', return_value=[]), \
              patch.object(browser_module.subprocess, 'run'):
             Browser._install_chromium()
+
+    def test_install_reports_byte_progress(self):
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, 'w') as bundle:
+            bundle.writestr('chrome-win64/chrome.exe', 'binary')
+            bundle.writestr('chrome-headless-shell-win64/chrome-headless-shell.exe', 'binary')
+        payload = buffer.getvalue()
+
+        def fake_segment(url, start, end, part, on_bytes=None, attempts=10):
+            chunk = payload[start:end + 1]
+            part.write_bytes(chunk)
+            if on_bytes:
+                on_bytes(len(chunk))
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            package = root / 'driver' / 'package'
+            package.mkdir(parents=True)
+            manifest = {"browsers": [
+                {"name": "chromium", "revision": "1243", "browserVersion": "153.0.8010.12"},
+                {"name": "chromium-headless-shell", "revision": "1243", "browserVersion": "153.0.8010.12"},
+            ]}
+            (package / 'browsers.json').write_text(json.dumps(manifest), encoding='utf-8')
+            with patch.object(Browser, '_ordered_hosts', return_value=[('https://a', 'a')]), \
+                 patch.object(Browser, '_content_length', return_value=len(payload)), \
+                 patch.object(Browser, '_fetch_segment', side_effect=fake_segment), \
+                 patch.object(Browser, 'browser_cache_dir', return_value=root), \
+                 patch.object(browser_module, 'compute_driver_executable',
+                              return_value=('node', package / 'cli.js')):
+                Browser._install_chromium()
+                progress = Browser.install_progress()
+                self.assertTrue((root / 'chromium-1243' / 'INSTALLATION_COMPLETE').exists())
+                self.assertTrue((root / 'chromium-headless-shell-1243' / 'INSTALLATION_COMPLETE').exists())
+            self.assertEqual(progress, {'done': len(payload) * 2, 'total': len(payload) * 2})
+            self.assertTrue(chromium_ready(root))
 
 
 if __name__ == '__main__':

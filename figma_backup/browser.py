@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -99,11 +100,13 @@ class Browser:
         failures = []
         for host, label in cls._ordered_hosts():
             try:
+                cls._reset_progress(cls._pending_bytes(host))
                 cls._ensure_browser(host, "chromium")
                 cls._ensure_browser(host, "chromium-headless-shell")
                 return
             except Exception as error:
                 failures.append(f"{label}: {error}")
+        cls._reset_progress(0)
         error = cls._install_via_cli()
         if error is None:
             return
@@ -112,6 +115,47 @@ class Browser:
             "Automatic Chromium installation failed - tried all sources: "
             + "; ".join(failures)
         )
+
+    # Byte progress for the setup UI. done/total cover the current source
+    # attempt; when total is 0 the UI falls back to an indeterminate bar.
+    INSTALL_PROGRESS = {"done": 0, "total": 0}
+    _progress_lock = threading.Lock()
+
+    @classmethod
+    def _reset_progress(cls, total: int) -> None:
+        with cls._progress_lock:
+            cls.INSTALL_PROGRESS.update(done=0, total=total)
+
+    @classmethod
+    def _bump_progress(cls, count: int) -> None:
+        with cls._progress_lock:
+            cls.INSTALL_PROGRESS["done"] += count
+
+    @classmethod
+    def install_progress(cls) -> dict:
+        with cls._progress_lock:
+            return dict(cls.INSTALL_PROGRESS)
+
+    @classmethod
+    def _pending_bytes(cls, host: str) -> int:
+        """Total bytes still missing for a fresh install from this host.
+
+        0 on any failure to measure; the UI then stays indeterminate.
+        """
+        try:
+            _, cli = compute_driver_executable()
+            manifest = json.loads((Path(cli).parent / "browsers.json").read_text(encoding="utf-8"))
+            pending = 0
+            for name in ("chromium", "chromium-headless-shell"):
+                entry = next(b for b in manifest["browsers"] if b["name"] == name)
+                dest = cls.browser_cache_dir() / f"{name}-{entry['revision']}"
+                if (dest / "INSTALLATION_COMPLETE").exists():
+                    continue
+                archive, _ = cls._cft_archive(name, entry["browserVersion"])
+                pending += cls._content_length(f"{host}/{archive}")
+            return pending
+        except Exception:
+            return 0
 
     @classmethod
     def _ensure_browser(cls, host: str, name: str) -> None:
@@ -125,7 +169,7 @@ class Browser:
             return
         with tempfile.TemporaryDirectory(prefix="figbak-pw-") as scratch:
             bundle = Path(scratch) / f"{top}.zip"
-            cls._download(f"{host}/{archive}", bundle)
+            cls._download(f"{host}/{archive}", bundle, cls._bump_progress)
             with zipfile.ZipFile(bundle) as data:
                 data.extractall(dest)
         if not (dest / top).is_dir():
@@ -146,10 +190,10 @@ class Browser:
         return f"builds/cft/{version}/{arch}/{stem}.zip", stem
 
     @classmethod
-    def _download(cls, url: str, dest: Path) -> None:
+    def _download(cls, url: str, dest: Path, on_bytes=None) -> None:
         """Ranged, multi-segment download; one stalled socket never kills it."""
         size = cls._content_length(url)
-        parts = cls._download_segments(url, size, dest.parent, dest.name)
+        parts = cls._download_segments(url, size, dest.parent, dest.name, on_bytes)
         with dest.open("wb") as sink:
             for part in parts:
                 with part.open("rb") as piece:
@@ -180,7 +224,7 @@ class Browser:
 
     @classmethod
     def _download_segments(cls, url: str, size: int, work: Path,
-                           stem: str) -> list[Path]:
+                           stem: str, on_bytes=None) -> list[Path]:
         count = max(1, min(cls.SEGMENTS, size // (512 * 1024)))
         span = (size + count - 1) // count
         parts, futures = [], []
@@ -192,14 +236,14 @@ class Browser:
                     break
                 part = work / f"{stem}.{index:03d}.part"
                 parts.append(part)
-                futures.append(pool.submit(cls._fetch_segment, url, start, end, part))
+                futures.append(pool.submit(cls._fetch_segment, url, start, end, part, on_bytes))
             for future in futures:
                 future.result()
         return parts
 
     @staticmethod
     def _fetch_segment(url: str, start: int, end: int, part: Path,
-                       attempts: int = 10) -> None:
+                       on_bytes=None, attempts: int = 10) -> None:
         """Fetch one byte range, resuming from whatever a previous try saved."""
         want = end - start + 1
         for _ in range(attempts):
@@ -221,6 +265,8 @@ class Browser:
                             if not chunk:
                                 break
                             sink.write(chunk)
+                            if on_bytes:
+                                on_bytes(len(chunk))
             except Exception:
                 continue
         raise RuntimeError(f"segment {start}-{end} failed after {attempts} attempts")

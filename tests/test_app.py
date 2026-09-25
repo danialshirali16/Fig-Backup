@@ -171,6 +171,9 @@ class InstallerBrowser:
         self.fail = fail
         self.calls = 0
 
+    def install_progress(self):
+        return {"done": 0, "total": 0}
+
     def _install_chromium(self):
         self.calls += 1
         self.release.wait(timeout=5)
@@ -200,7 +203,8 @@ class BrowserInstallTests(unittest.TestCase):
         bridge = BridgeTests.make_bridge(InstallerBrowser())
         bridge.executor = self.executor
         bridge.browser_state = {'phase': 'setting_up', 'message': ''}
-        self.assertEqual(bridge.status()['browser'], {'phase': 'setting_up', 'message': ''})
+        self.assertEqual(bridge.status()['browser'],
+                         {'phase': 'setting_up', 'message': '', 'done': 0, 'total': 0})
 
     def test_install_success_marks_ready(self):
         browser = InstallerBrowser()

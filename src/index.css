@@ -150,7 +150,7 @@
 }
 
 /* Windows frameless titlebar: keep header actions clear of the caption buttons. */
-.native-win-titlebar .app-header-inner { padding-inline-end: 144px; }
+.native-win-titlebar .app-header-inner { padding-right: 144px; }
 
 /* Indeterminate bar for the one-time browser setup (no honest % exists, so
    the sweep never implies progress). RTL mirrors the sweep direction. */

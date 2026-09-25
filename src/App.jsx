@@ -2,9 +2,9 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Popover as PopoverPrimitive } from 'radix-ui'
 import { toast } from 'sonner'
 import {
-  AlertTriangle, Check, CheckCircle2, ChevronRight, Copy, Download, ExternalLink,
+  AlertTriangle, Check, CheckCircle2, ChevronRight, Copy, Download, ExternalLink, Eye, EyeOff,
   Folder, FolderInput, Loader2, Minus, Play, RefreshCw, RotateCcw, Settings as SettingsIcon,
-  ShieldCheck, Square, X,
+  Square, X,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -14,7 +14,6 @@ import { Badge } from '@/components/ui/badge'
 import { Card } from '@/components/ui/card'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Toaster } from '@/components/ui/sonner'
-import { Alert, AlertDescription } from '@/components/ui/alert'
 import { translate, LANGUAGES, RTL_LANGUAGES } from './i18n'
 import { DONE_STATES, queueProgressPercent, summarizeDownloadRun } from './download-queue'
 import { flyToQueue, cancelAllFlights } from './fly-to-queue'
@@ -80,19 +79,39 @@ function SkeletonRows({ count = 3, label }) {
   )
 }
 
-/* One-time browser setup state. phase: setting_up | failed | ready (ready renders nothing). */
-function BrowserSetupState({ phase, message, escalated, tone = 'full', t }) {
+/* One-time browser setup state. phase: setting_up | failed | ready (ready renders nothing).
+   progress: { done, total } in bytes — a known total swaps the indeterminate bar for a
+   determinate one and the static body line for a live MB caption. Retry lives inside the
+   failed variant so no caller renders a second retry button next to it. */
+function BrowserSetupState({ phase, message, escalated, tone = 'full', t, onRetry, busy, progress }) {
   if (phase === 'failed') {
+    const detail = firstLine(message).slice(0, 240)
     return (
-      <div role="alert" className="flex items-start gap-2.5 rounded-lg border border-[var(--figma-color-border-danger)] bg-[var(--figma-color-bg-danger-tertiary)] px-3.5 py-3">
-        <AlertTriangle className="mt-0.5 size-4 shrink-0 text-destructive" aria-hidden="true" />
-        <span className="min-w-0 flex-1">
-          <span className="block text-sm font-semibold text-destructive">{t('setupFailed')}</span>
-          {tone === 'full' && message && <span className="mt-0.5 block break-words text-xs leading-snug text-muted-foreground">{message}</span>}
-        </span>
+      <div role="alert" className="rounded-lg border border-[var(--figma-color-border-danger)] bg-[var(--figma-color-bg-danger-tertiary)] px-3.5 py-3">
+        <div className="flex items-start gap-2.5">
+          <AlertTriangle className="mt-0.5 size-4 shrink-0 text-destructive" aria-hidden="true" />
+          <span className="min-w-0 flex-1">
+            <span className="block text-sm font-semibold text-destructive">{t('setupFailed')}</span>
+            {tone === 'full' && <span className="mt-0.5 block text-xs leading-relaxed text-muted-foreground">{t('setupFailedBody')}</span>}
+          </span>
+          {onRetry && (
+            <Button variant="outline" size="sm" className="shrink-0" onClick={onRetry} disabled={!!busy}>
+              {busy === 'browser-setup' ? <Loader2 className="size-3.5 motion-safe:animate-spin" aria-hidden="true" /> : <RotateCcw className="size-3" aria-hidden="true" />} {t('setupRetry')}
+            </Button>
+          )}
+        </div>
+        {tone === 'full' && detail && (
+          <details className="mt-2">
+            <summary className="cursor-pointer text-xs font-medium text-muted-foreground hover:text-foreground">{t('setupDetails')}</summary>
+            <pre dir="ltr" className="mt-1.5 max-h-24 overflow-auto whitespace-pre-wrap break-all rounded-md bg-muted/60 p-2 font-mono text-[11px] leading-snug text-muted-foreground">{detail}</pre>
+          </details>
+        )}
       </div>
     )
   }
+  const total = progress?.total || 0
+  const done = Math.min(progress?.done || 0, total)
+  const determinate = total > 0
   return (
     <div role="status" className="rounded-lg border border-primary/25 bg-primary/5 px-3.5 py-3">
       <div className="flex items-start gap-2.5">
@@ -103,11 +122,20 @@ function BrowserSetupState({ phase, message, escalated, tone = 'full', t }) {
             <Badge variant="info">{t('setupBadge')}</Badge>
           </span>
           {tone === 'full' && (
-            <span className="mt-0.5 block text-xs leading-relaxed text-muted-foreground text-pretty">{escalated ? t('setupEscalated') : t('setupBody')}</span>
+            <span className="mt-0.5 block text-xs leading-relaxed text-muted-foreground text-pretty">
+              {escalated ? t('setupEscalated') : determinate ? t('setupProgress', { done: Math.round(done / 1048576), total: Math.round(total / 1048576) }) : t('setupBody')}
+            </span>
           )}
         </span>
       </div>
-      <SetupBar />
+      {/* Determinate bar: no .setup-bar-track class — that rule carries an RTL
+          scaleX(-1) flip for the indeterminate sweep, which would double-correct
+          a block-level fill that already anchors to the inline-start side. */}
+      {determinate ? (
+        <span aria-hidden="true" className="mt-3 block h-1 overflow-hidden rounded-full bg-muted">
+          <span className="block h-full rounded-full bg-primary transition-[width] duration-300" style={{ width: `${Math.round(done / total * 100)}%` }} />
+        </span>
+      ) : <SetupBar />}
     </div>
   )
 }
@@ -163,6 +191,8 @@ function App() {
   const [verifiedName, setVerifiedName] = useState('')
   const [token, setToken] = useState('')
   const [tokenError, setTokenError] = useState('')
+  const [showToken, setShowToken] = useState(false)
+  const [teamsTimeout, setTeamsTimeout] = useState(false)
   const [teams, setTeams] = useState([])
   const [team, setTeam] = useState(null)
   const [folders, setFolders] = useState([])
@@ -186,6 +216,7 @@ function App() {
   const stopAfterCurrentRef = useRef(false)
   const selectBtnRef = useRef(null)
   const runIdRef = useRef(0)
+  const discoverRunRef = useRef(0)
   const browserWatchRef = useRef(false)
   const setupStartRef = useRef(0)
   const prevSetupPhaseRef = useRef('ready')
@@ -195,7 +226,6 @@ function App() {
   const countCopy = (key, count) => t(count === 1 ? `${key}One` : key, { count })
   const appearance = preferences.theme === 'system' ? (systemDark ? 'dark' : 'light') : preferences.theme
   const rtl = RTL_LANGUAGES.has(language)
-  const languageNative = LANGUAGES.find(item => item.code === language)?.native || language
   const [sortedFolders, sortedFiles] = useMemo(() => {
     const collator = new Intl.Collator(language, { sensitivity: 'base', numeric: true })
     const byName = (a, b) => collator.compare(a.name || '', b.name || '')
@@ -298,10 +328,30 @@ function App() {
   }
 
   async function discover(bridge = api) {
-    const result = await call('teams', () => bridge.discover_teams())
-    if (!result) return
-    setTeams(result.teams || [])
-    setAuthRequired(!!result.auth_required)
+    if (busy === 'teams') return
+    const runId = ++discoverRunRef.current
+    setBusy('teams'); setError('')
+    try {
+      const result = await Promise.race([
+        bridge.discover_teams(),
+        sleep(20000).then(() => { throw new Error('discover-timeout') }),
+      ])
+      if (runId !== discoverRunRef.current) return // a newer retry owns the screen
+      setTeams(result.teams || [])
+      setAuthRequired(!!result.auth_required)
+      setTeamsTimeout(false)
+    } catch (err) {
+      if (runId !== discoverRunRef.current) return
+      if (/discover-timeout/.test(String(err))) {
+        // Keep any list already on screen; only a bare screen gets the inline state.
+        if (teams.length > 0) toast.error(t('teamsTimeout'), { id: 'app-notice' })
+        else setTeamsTimeout(true)
+      } else {
+        setError(firstLine(err))
+      }
+    } finally {
+      if (runId === discoverRunRef.current) setBusy('')
+    }
   }
 
   /* One-time browser setup: poll the bridge until the installer settles. */
@@ -627,14 +677,23 @@ function App() {
         {[['token', t('stepToken')], ['signin', t('stepSignin')]].map(([key, label], i) => {
           const cur = wizardStep === key
           const done = key === 'token' && wizardStep === 'signin'
+          // 13px = (28px circle − 2px line) / 2, and ±22px = 14px radius + 8px gap;
+          // both are coupled to the size-7 circle below.
+          const circle = (
+            <span className={'relative z-10 grid size-7 place-items-center rounded-full text-[11px] font-extrabold ' + (
+              cur ? 'bg-primary/10 text-brand-text ring-2 ring-primary/25' : done ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground'
+            )}>
+              {done ? <Check className="size-3.5" aria-hidden="true" /> : i + 1}
+            </span>
+          )
           return (
             <div key={key} className="relative flex flex-1 flex-col items-center gap-1.5">
-              {i > 0 && <span aria-hidden="true" className={'absolute top-3 h-0.5 start-[calc(-50%+22px)] end-[calc(50%+22px)] ' + (done || cur ? 'bg-primary' : 'bg-muted')} />}
-              <span className={'relative z-10 grid size-7 place-items-center rounded-full text-[11px] font-extrabold ' + (
-                cur ? 'bg-primary/10 text-brand-text ring-2 ring-primary/25' : done ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground'
-              )}>
-                {done ? <Check className="size-3.5" /> : i + 1}
-              </span>
+              {i > 0 && <span aria-hidden="true" className={'absolute top-[13px] h-0.5 start-[calc(-50%+22px)] end-[calc(50%+22px)] ' + (done || cur ? 'bg-primary' : 'bg-muted')} />}
+              {done ? (
+                <button type="button" onClick={() => openWizard('token')} aria-label={t('backToToken')} title={t('backToToken')} className="rounded-full focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring">
+                  {circle}
+                </button>
+              ) : circle}
               <span className={'text-[11px] font-bold ' + (cur ? 'text-foreground' : 'text-muted-foreground')}>{label}</span>
             </div>
           )
@@ -642,33 +701,44 @@ function App() {
       </div>
       {wizardStep === 'token' ? (
         <>
-          <div className="mb-4 text-center">
+          <div className="mb-5 text-center">
             <h1 className="text-xl font-bold tracking-tight text-balance">{t('tokenTitle')}</h1>
-            <p className="mt-1 text-sm leading-relaxed text-muted-foreground text-pretty">{t('stepOf', { step: 1, total: 2 })} — {t('tokenDescription')}</p>
           </div>
           <form onSubmit={saveTokenContinue} className="grid gap-3">
             <Label htmlFor="token-wizard">{t('tokenLabel')}</Label>
-            <Input id="token-wizard" type="password" value={token} onInput={e => { setToken(e.currentTarget.value); setTokenError('') }} placeholder="figd_…" autoComplete="off" aria-invalid={!!tokenError} />
+            <div className="relative">
+              <Input id="token-wizard" type={showToken ? 'text' : 'password'} value={token} onInput={e => { setToken(e.currentTarget.value); setTokenError('') }} placeholder="figd_…" autoComplete="off" aria-invalid={!!tokenError} className="pe-10" />
+              <button type="button" onClick={() => setShowToken(v => !v)} aria-label={showToken ? t('hideToken') : t('showToken')} aria-pressed={showToken} className="absolute inset-y-0 end-0 grid w-10 place-items-center rounded-e-md text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring">
+                {showToken ? <EyeOff className="size-4" aria-hidden="true" /> : <Eye className="size-4" aria-hidden="true" />}
+              </button>
+            </div>
             {tokenError && <p role="alert" className="text-xs font-medium text-destructive">{tokenError}</p>}
-            <p className="text-xs text-muted-foreground">{t('tokenHint')}</p>
-            <Alert className="text-start">
-              <ShieldCheck />
-              <AlertDescription className="text-xs leading-relaxed">{t('tokenPrivacy')}</AlertDescription>
-            </Alert>
-            {setupPending && <BrowserSetupState phase="setting_up" tone="slim" t={t} />}
-            <div className="mt-2 flex flex-wrap items-center gap-3">
-              <span className="me-auto text-[11px] text-muted-foreground">
-                {t('language')}: <b className="font-semibold text-foreground">{languageNative}</b> · <button type="button" className="font-semibold text-brand-text hover:underline" onClick={openSettings}>{t('settings')}</button>
-              </span>
+            <p className="text-xs leading-relaxed text-muted-foreground">
+              {t('tokenHint')}{' '}
+              <button type="button" className="font-semibold text-brand-text hover:underline" onClick={() => api?.open_external('https://www.figma.com/settings')}>{t('tokenLink')}</button>
+            </p>
+            <p className="text-xs text-muted-foreground">{t('tokenPrivacy')}</p>
+            <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-1">
+                <Select value={language} onValueChange={value => savePrefs({ language: value })}>
+                  <SelectTrigger aria-label={t('language')} className="w-64 max-w-full"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {LANGUAGES.map(item => (
+                      <SelectItem key={item.code} value={item.code}>{item.native}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Button type="button" variant="link" size="sm" className="text-brand-text" onClick={openSettings}>{t('settings')}</Button>
+              </div>
               <Button type="submit" disabled={!!busy}>{busy === 'token' ? <Spinner /> : null} {t('saveContinue')}</Button>
             </div>
           </form>
         </>
       ) : (
         <>
-          <div className="mb-4 text-center">
+          <div className="mb-5 text-center">
             <h1 className="text-xl font-bold tracking-tight text-balance">{t('signInTitle')}</h1>
-            <p className="mt-1 text-sm leading-relaxed text-muted-foreground text-pretty">{t('stepOf', { step: 2, total: 2 })} — {t('signinCopy')}</p>
+            <p className="mt-1 text-sm leading-relaxed text-muted-foreground text-pretty">{t('signinCopy')}</p>
           </div>
           <div className="grid gap-3">
             {verifiedName && (
@@ -677,24 +747,14 @@ function App() {
                 <Badge variant="success"><CheckCircle2 className="size-3" /> {t('verified')}</Badge>
               </div>
             )}
-            <Alert className="text-start">
-              <ShieldCheck />
-              <AlertDescription className="leading-relaxed">{t('signInDescription')}</AlertDescription>
-            </Alert>
             {setupBlocked && (
-              <BrowserSetupState phase={setupFailed ? 'failed' : 'setting_up'} message={browserSetup.message} escalated={setupEscalated} t={t} />
+              <BrowserSetupState phase={setupFailed ? 'failed' : 'setting_up'} message={browserSetup.message} escalated={setupEscalated} t={t} onRetry={retryBrowserSetup} busy={busy} progress={browserSetup} />
             )}
             <div className="mt-2 flex flex-wrap items-center justify-end gap-2">
               <Button variant="ghost" onClick={completeSetup}>{t('signinLater')}</Button>
-              {setupPending ? (
-                <Button disabled><Spinner /> {t('setupWaiting')}</Button>
-              ) : setupFailed ? (
-                <Button onClick={retryBrowserSetup} disabled={!!busy}>
-                  {busy === 'browser-setup' ? <Spinner /> : <RotateCcw className="size-4" />} {t('setupRetry')}
-                </Button>
-              ) : (
-                <Button onClick={signInNow} disabled={!!busy}>
-                  {busy === 'sign-in' ? <Spinner /> : loginOpen ? <CheckCircle2 className="size-4" /> : <ExternalLink className="size-4" />}
+              {!setupFailed && (
+                <Button onClick={signInNow} disabled={!!busy || setupPending}>
+                  {busy === 'sign-in' ? <Spinner /> : loginOpen ? <CheckCircle2 className="size-4" aria-hidden="true" /> : <ExternalLink className="size-4" aria-hidden="true" />}
                   {loginOpen ? t('iveSignedIn') : t('openSignIn')}
                 </Button>
               )}
@@ -816,10 +876,7 @@ function App() {
       )}
       {setupFailed && (
         <div className="px-4 py-2">
-          <BrowserSetupState phase="failed" message={browserSetup.message} t={t} />
-          <Button variant="outline" size="sm" onClick={retryBrowserSetup} className="mt-2 w-full">
-            {busy === 'browser-setup' ? <Spinner /> : <RotateCcw className="size-3" />} {t('setupRetry')}
-          </Button>
+          <BrowserSetupState phase="failed" message={browserSetup.message} t={t} onRetry={retryBrowserSetup} busy={busy} />
         </div>
       )}
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
@@ -842,7 +899,7 @@ function App() {
           </section>
         )}
         {!queue.length && (
-          <div className="flex flex-1 flex-col items-center justify-center px-4 text-center text-sm text-muted-foreground">
+          <div className="flex min-h-40 flex-1 flex-col items-center justify-center px-4 py-6 text-center text-sm text-muted-foreground">
             <Download className="mb-2 size-5 opacity-60" aria-hidden="true" />
             {t('downloadManagerEmpty')}
           </div>
@@ -863,7 +920,7 @@ function App() {
         onDoubleClick={nativeWin ? () => window.pywebview.api.toggle_maximize_window() : undefined}
       >
         {nativeWin && (
-          <div className="absolute inset-y-0 end-0 z-10">
+          <div dir="ltr" className="absolute inset-y-0 right-0 z-10">
             <WindowControls maximized={maximized} t={t} />
           </div>
         )}
@@ -890,7 +947,7 @@ function App() {
                   </Button>
                 </PopoverPrimitive.Trigger>
                 <PopoverPrimitive.Portal>
-                  <PopoverPrimitive.Content id="download-manager" aria-label={t('downloadManagerTitle')} side="bottom" align="end" sideOffset={8} collisionPadding={8} onOpenAutoFocus={event => event.preventDefault()} className="z-50 flex max-h-[min(800px,var(--radix-popover-content-available-height))] min-h-[400px] w-[min(375px,calc(100vw-24px))] flex-col overflow-hidden rounded-xl border bg-popover text-popover-foreground shadow-xl outline-none">
+                  <PopoverPrimitive.Content id="download-manager" aria-label={t('downloadManagerTitle')} side="bottom" align="end" sideOffset={8} collisionPadding={8} onOpenAutoFocus={event => event.preventDefault()} className="z-50 flex max-h-[min(800px,var(--radix-popover-content-available-height))] w-[min(375px,calc(100vw-24px))] flex-col overflow-hidden rounded-xl border bg-popover text-popover-foreground shadow-xl outline-none">
                     {downloadManager}
                   </PopoverPrimitive.Content>
                 </PopoverPrimitive.Portal>
@@ -929,8 +986,8 @@ function App() {
                 <p className="text-lg font-semibold text-foreground">{t('teamsDescription')}</p>
               ) : null}
               <div className="flex flex-wrap items-center gap-2">
-                {view === 'teams' && !setupPending && (
-                  <Button variant="link" size="sm" onClick={() => discover()} disabled={!!busy}>
+                {view === 'teams' && (
+                  <Button variant="link" size="sm" onClick={() => discover()} aria-label={t('refresh')}>
                     {busy === 'teams' ? <Spinner /> : <RefreshCw />} {t('refresh')}
                   </Button>
                 )}
@@ -969,7 +1026,7 @@ function App() {
               <div className="flex flex-wrap items-center justify-between gap-4 rounded-md px-3 py-2.5">
                 <Label htmlFor="setting-language">{t('language')}</Label>
                 <Select dir={rtl ? 'rtl' : 'ltr'} value={language} onValueChange={async value => { if (await savePrefs({ language: value })) toast.success(translate(value, 'savedNotice'), { id: 'app-notice' }) }}>
-                  <SelectTrigger id="setting-language" className="w-40 max-w-full"><SelectValue /></SelectTrigger>
+                  <SelectTrigger id="setting-language" className="w-64 max-w-full"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     {LANGUAGES.map(item => (
                       <SelectItem key={item.code} value={item.code}>{item.native}</SelectItem>
@@ -980,7 +1037,7 @@ function App() {
               <div className="flex flex-wrap items-center justify-between gap-4 rounded-md px-3 py-2.5">
                 <Label htmlFor="setting-theme">{t('theme')}</Label>
                 <Select dir={rtl ? 'rtl' : 'ltr'} value={preferences.theme} onValueChange={async value => { if (await savePrefs({ theme: value })) toast.success(t('savedNotice'), { id: 'app-notice' }) }}>
-                  <SelectTrigger id="setting-theme" className="w-40 max-w-full"><SelectValue /></SelectTrigger>
+                  <SelectTrigger id="setting-theme" className="w-64 max-w-full"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="system">{t('system')}</SelectItem>
                     <SelectItem value="light">{t('light')}</SelectItem>
@@ -994,15 +1051,20 @@ function App() {
                 </div>
                 <form onSubmit={saveTokenContinue} className="grid w-full max-w-xs gap-2.5">
                   <Label htmlFor="token-settings" className="sr-only">{t('newToken')}</Label>
-                  <Input id="token-settings" type="password" value={token} onInput={e => { setToken(e.currentTarget.value); setTokenError('') }} placeholder="figd_…" autoComplete="off" aria-invalid={!!tokenError} />
+                  <div className="relative">
+                    <Input id="token-settings" type={showToken ? 'text' : 'password'} value={token} onInput={e => { setToken(e.currentTarget.value); setTokenError('') }} placeholder="figd_…" autoComplete="off" aria-invalid={!!tokenError} className="pe-10" />
+                    <button type="button" onClick={() => setShowToken(v => !v)} aria-label={showToken ? t('hideToken') : t('showToken')} aria-pressed={showToken} className="absolute inset-y-0 end-0 grid w-10 place-items-center rounded-e-md text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring">
+                      {showToken ? <EyeOff className="size-4" aria-hidden="true" /> : <Eye className="size-4" aria-hidden="true" />}
+                    </button>
+                  </div>
                   {tokenError && <p role="alert" className="text-xs font-medium text-destructive">{tokenError}</p>}
                   <Button type="submit" className="justify-self-end" size="sm" disabled={!!busy}>{busy === 'token' ? <Spinner /> : null} {t(hasToken ? 'replaceToken' : 'newToken')}</Button>
                 </form>
               </div>
               <div className="flex flex-wrap items-center justify-between gap-4 rounded-md px-3 py-2.5">
                 <div>
-                  <h2 className="text-sm font-medium">{t('redoSetup')}</h2>
-                  <p className="mt-1 text-xs text-muted-foreground">{t('signInTitle')}</p>
+                  <h2 className="text-sm font-medium">{t('setupSection')}</h2>
+                  <p className="mt-1 text-xs text-muted-foreground">{t('setupRowHint')}</p>
                 </div>
                 <Button variant="outline" size="sm" onClick={redoSetup}><RotateCcw className="size-3.5" /> {t('redoSetup')}</Button>
               </div>
@@ -1028,35 +1090,20 @@ function App() {
           {view === 'teams' && (
             <div className="w-full">
               {setupPending && (
-                <div className="flex flex-wrap items-center justify-between gap-3 bg-primary/5 px-3 py-3.5">
-                  <div className="flex min-w-0 items-start gap-2.5">
-                    <Loader2 className="mt-0.5 size-4 shrink-0 text-brand-text motion-safe:animate-spin" aria-hidden="true" />
-                    <div className="min-w-0">
-                      <p className="text-sm font-semibold text-brand-text">{t('setupHeading')}</p>
-                      <p className="mt-0.5 max-w-md text-xs leading-relaxed text-muted-foreground">{setupEscalated ? t('setupEscalated') : t('setupBody')}</p>
-                    </div>
-                  </div>
+                <div className="mb-1">
+                  <BrowserSetupState phase="setting_up" escalated={setupEscalated} t={t} />
                 </div>
               )}
               {setupFailed && (
-                <div className="flex flex-wrap items-center justify-between gap-3 bg-[var(--figma-color-bg-danger-tertiary)] px-3 py-3.5">
-                  <div className="flex min-w-0 items-start gap-2.5">
-                    <AlertTriangle className="mt-0.5 size-4 shrink-0 text-destructive" aria-hidden="true" />
-                    <div className="min-w-0">
-                      <p className="text-sm font-semibold text-destructive">{t('setupFailed')}</p>
-                      {browserSetup.message && <p className="mt-0.5 max-w-md break-words text-xs leading-relaxed text-muted-foreground">{browserSetup.message}</p>}
-                    </div>
-                  </div>
-                  <Button variant="outline" size="sm" onClick={retryBrowserSetup} disabled={!!busy}>
-                    {busy === 'browser-setup' ? <Spinner /> : <RotateCcw className="size-3" />} {t('setupRetry')}
-                  </Button>
+                <div className="mb-1">
+                  <BrowserSetupState phase="failed" message={browserSetup.message} t={t} onRetry={retryBrowserSetup} busy={busy} />
                 </div>
               )}
               {authRequired && (
-                <div className="flex flex-wrap items-center justify-between gap-3 bg-primary/5 px-3 py-3.5">
+                <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-primary/25 bg-primary/5 px-3 py-3.5">
                   <div>
                     <p className="text-sm font-semibold text-brand-text">{t('signInTitle')}</p>
-                    <p className="mt-0.5 max-w-md text-xs leading-relaxed text-muted-foreground">{t('signInDescription')}</p>
+                    <p className="mt-0.5 max-w-md text-xs leading-relaxed text-muted-foreground">{t('signinCopy')}</p>
                   </div>
                   <Button size="sm" onClick={() => openWizard('signin')}><ExternalLink className="size-3.5" /> {t('openSignIn')}</Button>
                 </div>
@@ -1072,10 +1119,16 @@ function App() {
                   </button>
                 ))}
               </div>
-              {!teams.length && setupPending && (
+              {!teams.length && teamsTimeout && busy !== 'teams' && (
+                <div className="flex flex-col items-center gap-3 px-3 py-8 text-center text-sm leading-relaxed text-muted-foreground text-pretty">
+                  {t('teamsTimeout')}
+                  <Button variant="outline" size="sm" onClick={() => discover()}><RefreshCw className="size-3.5" /> {t('retry')}</Button>
+                </div>
+              )}
+              {!teams.length && setupPending && !teamsTimeout && (
                 <div role="status" className="px-3 py-8 text-center text-sm text-muted-foreground">{t('teamsPending')}</div>
               )}
-              {!teams.length && !setupBlocked && busy !== 'teams' && (
+              {!teams.length && !setupBlocked && busy !== 'teams' && !teamsTimeout && (
                 <div className="px-3 py-8 text-center text-sm text-muted-foreground">{t('noTeams')}</div>
               )}
             </div>
