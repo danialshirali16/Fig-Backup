@@ -11,7 +11,7 @@
 <p align="center">
   <a href="../../LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue"></a>
   <img alt="Platforms" src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows-blue">
-  <a href="https://github.com/danialshirali16/Fig-Backup/actions/workflows/windows-build.yml?query=branch%3Awindows-build" title="Statut de build de la branche windows-build"><img alt="Windows build (windows-build branch)" src="https://github.com/danialshirali16/Fig-Backup/actions/workflows/windows-build.yml/badge.svg?branch=windows-build"></a>
+  <a href="https://github.com/danialshirali16/Fig-Backup/actions/workflows/ci.yml"><img alt="CI status" src="https://github.com/danialshirali16/Fig-Backup/actions/workflows/ci.yml/badge.svg"></a>
 </p>
 
 **Enregistrez des copies natives de vos fichiers Figma sur votre ordinateur.** Fig Backup est une application de bureau gratuite pour Mac Apple Silicon et Windows 10/11. Elle enregistre les fichiers Figma Design en `.fig`, les fichiers FigJam en `.jam` et les fichiers Figma Slides en `.deck`.

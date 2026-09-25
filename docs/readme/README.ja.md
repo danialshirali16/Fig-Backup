@@ -11,7 +11,7 @@
 <p align="center">
   <a href="../../LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue"></a>
   <img alt="Platforms" src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows-blue">
-  <a href="https://github.com/danialshirali16/Fig-Backup/actions/workflows/windows-build.yml?query=branch%3Awindows-build" title="windows-build ブランチのビルド状況"><img alt="Windows build (windows-build branch)" src="https://github.com/danialshirali16/Fig-Backup/actions/workflows/windows-build.yml/badge.svg?branch=windows-build"></a>
+  <a href="https://github.com/danialshirali16/Fig-Backup/actions/workflows/ci.yml"><img alt="CI status" src="https://github.com/danialshirali16/Fig-Backup/actions/workflows/ci.yml/badge.svg"></a>
 </p>
 
 **Figmaファイルのネイティブコピーを自分のコンピュータに保存しましょう。** Fig BackupはApple Silicon MacとWindows 10/11向けの無料デスクトップアプリです。Figma Designのファイルを`.fig`として、FigJamのファイルを`.jam`として、Figma Slidesのファイルを`.deck`として保存します。

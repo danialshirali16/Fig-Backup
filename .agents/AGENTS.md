@@ -75,11 +75,10 @@ node --test tests/download-errors.test.js
 
 ## Releases
 
-- Tag `vX.Y.Z` on `main`; keep `package.json` and the Bridge's `version` string in sync with it.
-- macOS zip: `./build-mac.sh`, then
-  `ditto -c -k --sequesterRsrc --keepParent "release/Fig Backup.app" Fig-Backup-vX.Y.Z-macOS.zip`.
-- Windows zip: download the latest successful `Windows build` CI artifact from the
-  `windows-build` branch (`gh run download <run-id> -n Fig-Backup-Windows-x64`).
-- Notes: copy `.github/RELEASE_NOTES_TEMPLATE.md`; the "Generate release notes" categories live in
-  `.github/release.yml`.
-- Checklist before publishing: tests green, docs consistent, `SHA256SUMS.txt` over the zips.
+- **Releases are created exclusively by pushing a `vX.Y.Z` tag to `main`** — the Release workflow
+  builds both platforms on GitHub runners, runs the tests, computes `SHA256SUMS.txt`, and
+  publishes the GitHub Release. Never build/upload release assets manually.
+- Keep `package.json` and the Bridge's `version` string in sync with the tag.
+- Notes: the workflow generates notes via `.github/release.yml` categories; edit the release
+  afterwards with highlights from `.github/RELEASE_NOTES_TEMPLATE.md` if wanted.
+- Checklist before tagging: tests green locally, docs consistent, version strings match.

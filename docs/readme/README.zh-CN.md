@@ -11,7 +11,7 @@
 <p align="center">
   <a href="../../LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue"></a>
   <img alt="Platforms" src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows-blue">
-  <a href="https://github.com/danialshirali16/Fig-Backup/actions/workflows/windows-build.yml?query=branch%3Awindows-build" title="windows-build 分支的构建状态"><img alt="Windows build (windows-build branch)" src="https://github.com/danialshirali16/Fig-Backup/actions/workflows/windows-build.yml/badge.svg?branch=windows-build"></a>
+  <a href="https://github.com/danialshirali16/Fig-Backup/actions/workflows/ci.yml"><img alt="CI status" src="https://github.com/danialshirali16/Fig-Backup/actions/workflows/ci.yml/badge.svg"></a>
 </p>
 
 **将 Figma 文件的原生副本保存到你的电脑。** Fig Backup 是一款适用于 Apple Silicon Mac 和 Windows 10/11 的免费桌面应用。它将 Figma Design 文件保存为 `.fig`，FigJam 文件保存为 `.jam`，Figma Slides 文件保存为 `.deck`。

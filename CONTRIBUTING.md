@@ -17,7 +17,7 @@ npm run build
 ```
 
 - **Run the app**: `.venv/bin/python -m figma_backup.app` (Windows: `.venv\Scripts\python -m figma_backup.app`)
-- **Run tests**: `.venv/bin/python -m unittest discover -s tests` and `node --test tests/download-errors.test.js`
+- **Run tests**: `.venv/bin/python -m unittest discover -s tests` and `npm run test:node`
   (`tests/test_app.py` imports Playwright, so run the suite from the project venv.)
 - **UI review without the backend**: `npm run dev`, then open
   `http://127.0.0.1:5173/?preview=1` — a development-only view with sample data that never touches
@@ -40,15 +40,17 @@ npm run build
 ## Packaging
 
 - macOS: `./build-mac.sh` → `release/Fig Backup.app` (regenerates `app-icon.icns` from
-  `app-icon-macos.png` on every build).
+  `app-icon.png` on every build).
 - Windows: `./build-windows.sh` from Git Bash (Node 22+, Python 3.11+) →
-  `release/Fig Backup/Fig Backup.exe`. CI builds this on every push to the `windows-build` branch.
+  `release/Fig Backup/Fig Backup.exe`.
 
 ## Releases
 
-Releases are tagged `vX.Y.Z` on `main` and published through GitHub Releases with the macOS and
-Windows zips plus a `SHA256SUMS.txt`. Copy `.github/RELEASE_NOTES_TEMPLATE.md` for the notes;
-the "Generate release notes" button is configured via `.github/release.yml`.
+Releases are fully automated: push a `vX.Y.Z` tag to `main` and the Release workflow builds both
+platforms on GitHub's runners, runs the tests, and publishes `Fig-Backup-macOS.zip`,
+`Fig-Backup-Windows-x64.zip`, and a combined `SHA256SUMS.txt` to GitHub Releases with generated
+notes (categories in `.github/release.yml`; copy `.github/RELEASE_NOTES_TEMPLATE.md` if you want
+a hand-written highlights section). Never upload release assets manually.
 
 ## Working with AI coding agents
 
