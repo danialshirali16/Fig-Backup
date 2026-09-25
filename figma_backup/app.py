@@ -78,7 +78,7 @@ class Bridge:
         return {"has_token": bool(self.token), "downloads": str(DOWNLOADS),
                 "teams": read_json(SUPPORT / "teams.json", []),
                 "preferences": self.preferences_store.load(),
-                "browser": dict(self.browser_state), "version": "0.2.0"}
+                "browser": dict(self.browser_state), "version": "0.3.0"}
 
     def install_browser(self) -> dict:
         with self.lock:
