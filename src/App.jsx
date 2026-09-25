@@ -672,7 +672,7 @@ function App() {
 
   /* ---------- wizard ---------- */
   const wizard = view === 'wizard' && (
-    <Card className="mx-auto w-full max-w-xl p-0 ring-0">
+    <Card className="mx-auto w-full max-w-xl px-7 py-6">
       <div className="mb-5 flex items-center">
         {[['token', t('stepToken')], ['signin', t('stepSignin')]].map(([key, label], i) => {
           const cur = wizardStep === key
@@ -713,23 +713,25 @@ function App() {
               </button>
             </div>
             {tokenError && <p role="alert" className="text-xs font-medium text-destructive">{tokenError}</p>}
-            <p className="text-xs leading-relaxed text-muted-foreground">
-              {t('tokenHint')}{' '}
-              <button type="button" className="font-semibold text-brand-text hover:underline" onClick={() => api?.open_external('https://www.figma.com/settings')}>{t('tokenLink')}</button>
-            </p>
-            <p className="text-xs text-muted-foreground">{t('tokenPrivacy')}</p>
-            <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
-              <div className="flex items-center gap-1">
-                <Select value={language} onValueChange={value => savePrefs({ language: value })}>
-                  <SelectTrigger aria-label={t('language')} className="w-64 max-w-full"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    {LANGUAGES.map(item => (
-                      <SelectItem key={item.code} value={item.code}>{item.native}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <Button type="button" variant="link" size="sm" className="text-brand-text" onClick={openSettings}>{t('settings')}</Button>
-              </div>
+            <div className="space-y-1">
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                {t('tokenHint')}{' '}
+                <button type="button" className="font-semibold text-brand-text hover:underline" onClick={() => api?.open_external('https://www.figma.com/settings')}>{t('tokenLink')}</button>
+              </p>
+              <p className="text-xs leading-relaxed text-muted-foreground">{t('tokenPrivacy')}</p>
+            </div>
+            <div className="mt-1 flex flex-wrap items-center gap-1.5">
+              <Select dir={rtl ? 'rtl' : 'ltr'} value={language} onValueChange={value => savePrefs({ language: value })}>
+                <SelectTrigger aria-label={t('language')} size="sm" className="min-w-28 text-xs"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {LANGUAGES.map(item => (
+                    <SelectItem key={item.code} value={item.code}>{item.native}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Button type="button" variant="ghost" size="sm" className="text-muted-foreground" onClick={openSettings}>{t('settings')}</Button>
+            </div>
+            <div className="mt-2 flex flex-wrap items-center justify-end gap-2">
               <Button type="submit" disabled={!!busy}>{busy === 'token' ? <Spinner /> : null} {t('saveContinue')}</Button>
             </div>
           </form>
