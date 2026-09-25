@@ -6,8 +6,11 @@ import json
 import platform
 import re
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
+import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import urlparse
@@ -90,24 +93,157 @@ class Browser:
         self.page = self.context.pages[0] if self.context.pages else self.context.new_page()
         self.headless = headless
 
-    @staticmethod
-    def _install_chromium() -> None:
-        driver, cli = compute_driver_executable()
+    @classmethod
+    def _install_chromium(cls) -> None:
+        """Install the pinned browsers, trying every download source in turn."""
         failures = []
-        for host, label in Browser._ordered_hosts():
-            env = {**os.environ, "PLAYWRIGHT_DOWNLOAD_HOST": host}
+        for host, label in cls._ordered_hosts():
             try:
-                subprocess.run([str(driver), str(cli), "install", "chromium"],
-                               check=True, capture_output=True, text=True,
-                               timeout=Browser.INSTALL_TIMEOUT,
-                               creationflags=SUBPROCESS_FLAGS, env=env)
+                cls._ensure_browser(host, "chromium")
+                cls._ensure_browser(host, "chromium-headless-shell")
                 return
-            except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
-                detail = (getattr(error, "stderr", None) or getattr(error, "output", None) or "").strip().splitlines()
-                failures.append(f"{label}: {detail[-1] if detail else 'failed'}")
+            except Exception as error:
+                failures.append(f"{label}: {error}")
+        error = cls._install_via_cli()
+        if error is None:
+            return
+        failures.append(error)
         raise FigmaError(
-            "Automatic Chromium installation failed - tried all sources: " + "; ".join(failures)
+            "Automatic Chromium installation failed - tried all sources: "
+            + "; ".join(failures)
         )
+
+    @classmethod
+    def _ensure_browser(cls, host: str, name: str) -> None:
+        """Fetch one browser build from a download host and unpack it."""
+        _, cli = compute_driver_executable()
+        manifest = json.loads((Path(cli).parent / "browsers.json").read_text(encoding="utf-8"))
+        entry = next(b for b in manifest["browsers"] if b["name"] == name)
+        archive, top = cls._cft_archive(name, entry["browserVersion"])
+        dest = cls.browser_cache_dir() / f"{name}-{entry['revision']}"
+        if (dest / "INSTALLATION_COMPLETE").exists():
+            return
+        with tempfile.TemporaryDirectory(prefix="figbak-pw-") as scratch:
+            bundle = Path(scratch) / f"{top}.zip"
+            cls._download(f"{host}/{archive}", bundle)
+            with zipfile.ZipFile(bundle) as data:
+                data.extractall(dest)
+        if not (dest / top).is_dir():
+            raise RuntimeError(f"unexpected archive layout: {archive}")
+        (dest / "INSTALLATION_COMPLETE").write_text("", encoding="utf-8")
+
+    @staticmethod
+    def _cft_archive(name: str, version: str) -> tuple[str, str]:
+        """(archive path under any Chrome-for-Testing host, extracted top folder)."""
+        if sys.platform == "win32":
+            arch = "win64"
+        elif sys.platform == "darwin":
+            arch = f"mac-{'arm64' if platform.machine() == 'arm64' else 'x64'}"
+        else:
+            arch = "linux64"
+        flavor = "-headless-shell" if name.endswith("headless-shell") else ""
+        stem = f"chrome{flavor}-{arch}"
+        return f"builds/cft/{version}/{arch}/{stem}.zip", stem
+
+    @classmethod
+    def _download(cls, url: str, dest: Path) -> None:
+        """Ranged, multi-segment download; one stalled socket never kills it."""
+        size = cls._content_length(url)
+        parts = cls._download_segments(url, size, dest.parent, dest.name)
+        with dest.open("wb") as sink:
+            for part in parts:
+                with part.open("rb") as piece:
+                    shutil.copyfileobj(piece, sink)
+        if dest.stat().st_size != size:
+            raise RuntimeError(f"size mismatch: got {dest.stat().st_size}, want {size}")
+        for part in parts:
+            part.unlink(missing_ok=True)
+
+    @staticmethod
+    def _content_length(url: str) -> int:
+        request = Request(url, method="HEAD", headers={"User-Agent": "Fig-Backup"})
+        try:
+            with urlopen(request, timeout=30) as response:
+                length = response.headers.get("Content-Length")
+                if length:
+                    return int(length)
+        except Exception:
+            pass
+        request = Request(url, headers={"Range": "bytes=0-0", "User-Agent": "Fig-Backup"})
+        with urlopen(request, timeout=30) as response:
+            total = response.headers.get("Content-Range", "").rpartition("/")[-1]
+        if not total.isdigit():
+            raise RuntimeError(f"no length announced for {url}")
+        return int(total)
+
+    SEGMENTS = 16
+
+    @classmethod
+    def _download_segments(cls, url: str, size: int, work: Path,
+                           stem: str) -> list[Path]:
+        count = max(1, min(cls.SEGMENTS, size // (512 * 1024)))
+        span = (size + count - 1) // count
+        parts, futures = [], []
+        with ThreadPoolExecutor(max_workers=count) as pool:
+            for index in range(count):
+                start = index * span
+                end = min(start + span - 1, size - 1)
+                if start > end:
+                    break
+                part = work / f"{stem}.{index:03d}.part"
+                parts.append(part)
+                futures.append(pool.submit(cls._fetch_segment, url, start, end, part))
+            for future in futures:
+                future.result()
+        return parts
+
+    @staticmethod
+    def _fetch_segment(url: str, start: int, end: int, part: Path,
+                       attempts: int = 10) -> None:
+        """Fetch one byte range, resuming from whatever a previous try saved."""
+        want = end - start + 1
+        for _ in range(attempts):
+            have = part.stat().st_size if part.exists() else 0
+            if have == want:
+                return
+            if have > want:
+                part.unlink()
+                have = 0
+            try:
+                request = Request(url, headers={"Range": f"bytes={start + have}-{end}",
+                                                "User-Agent": "Fig-Backup"})
+                with urlopen(request, timeout=60) as response:
+                    if response.status != 206 and (start + have):
+                        raise RuntimeError("server ignored the range request")
+                    with part.open("ab") as sink:
+                        while True:
+                            chunk = response.read(256 * 1024)
+                            if not chunk:
+                                break
+                            sink.write(chunk)
+            except Exception:
+                continue
+        raise RuntimeError(f"segment {start}-{end} failed after {attempts} attempts")
+
+    @classmethod
+    def _install_via_cli(cls) -> str | None:
+        """Last resort: the stock installer, fine on networks that don't stall it.
+
+        chromium + headless-shell is ~325MB; on a throttled mirror that can
+        take over an hour, hence the generous ceiling. Returns None on success,
+        else a one-line failure summary.
+        """
+        driver, cli = compute_driver_executable()
+        try:
+            subprocess.run([str(driver), str(cli), "install", "chromium"],
+                           check=True, capture_output=True, text=True,
+                           timeout=cls.INSTALL_TIMEOUT,
+                           creationflags=SUBPROCESS_FLAGS)
+            return None
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+            detail = (getattr(error, "stderr", None) or getattr(error, "output", None)
+                      or "").strip().splitlines()
+            return f"playwright-installer: {detail[-1] if detail else 'failed'}"
 
     # The official CDN is unreachable from some networks (regional blocks and
     # firewalls); these mirrors serve the same builds/ tree byte-for-byte.
@@ -121,9 +257,11 @@ class Browser:
         "https://registry.npmmirror.com/-/binary/playwright": "npmmirror",
         "https://cdn.npmmirror.com/binaries/playwright": "npmmirror-cdn",
     }
-    # A slow single-stream mirror can legitimately need tens of minutes for
-    # chromium + headless-shell, so this is a generous ceiling, not a guess.
-    INSTALL_TIMEOUT = 2400
+    # chromium + headless-shell is ~325MB; on throttled single-stream mirrors
+    # that can take over an hour, so this is a generous ceiling, not a guess.
+    # A dead source still fails fast: the installer itself times each request
+    # out after 30s and retries a handful of times before exiting.
+    INSTALL_TIMEOUT = 7200
 
     @classmethod
     def _ordered_hosts(cls) -> tuple[tuple[str, str], ...]:

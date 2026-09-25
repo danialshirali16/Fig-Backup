@@ -1,3 +1,4 @@
+import platform
 import sys
 import tempfile
 import unittest
@@ -60,32 +61,63 @@ class FallbackSourceTests(unittest.TestCase):
             order = [label for _, label in Browser._ordered_hosts()]
         self.assertEqual(order, ['playwright.dev', 'npmmirror', 'npmmirror-cdn'])
 
-    def test_install_falls_back_to_next_source(self):
-        pairs = [('https://a', 'a'), ('https://b', 'b')]
+    def test_cft_archive_layout_matches_playwright_expectations(self):
+        if sys.platform == 'win32':
+            expected = {
+                'chromium': ('builds/cft/153.0.8010.12/win64/chrome-win64.zip', 'chrome-win64'),
+                'chromium-headless-shell': ('builds/cft/153.0.8010.12/win64/chrome-headless-shell-win64.zip',
+                                            'chrome-headless-shell-win64'),
+            }
+        elif sys.platform == 'darwin':
+            arch = 'mac-arm64' if platform.machine() == 'arm64' else 'mac-x64'
+            expected = {
+                'chromium': (f'builds/cft/153.0.8010.12/{arch}/chrome-{arch}.zip', f'chrome-{arch}'),
+                'chromium-headless-shell': (f'builds/cft/153.0.8010.12/{arch}/chrome-headless-shell-{arch}.zip',
+                                            f'chrome-headless-shell-{arch}'),
+            }
+        else:
+            expected = {
+                'chromium': ('builds/cft/153.0.8010.12/linux64/chrome-linux64.zip', 'chrome-linux64'),
+                'chromium-headless-shell': ('builds/cft/153.0.8010.12/linux64/chrome-headless-shell-linux64.zip',
+                                            'chrome-headless-shell-linux64'),
+            }
+        for name, wanted in expected.items():
+            self.assertEqual(Browser._cft_archive(name, '153.0.8010.12'), wanted)
+
+    def test_install_tries_next_host_when_download_fails(self):
         calls = []
-
-        def fake_run(cmd, **kwargs):
-            calls.append(kwargs.get('env', {}).get('PLAYWRIGHT_DOWNLOAD_HOST'))
-            if len(calls) == 1:
-                raise CalledProcessError(1, cmd, stderr='Error: Download failure, code=1')
-
-        with patch.object(Browser, '_ordered_hosts', return_value=pairs), \
-             patch.object(browser_module.subprocess, 'run', side_effect=fake_run):
+        def fake_ensure(host, name):
+            calls.append((host, name))
+            if host == 'https://a':
+                raise RuntimeError('download stalled')
+        with patch.object(Browser, '_ordered_hosts',
+                          return_value=[('https://a', 'a'), ('https://b', 'b')]), \
+             patch.object(Browser, '_ensure_browser', side_effect=fake_ensure):
             Browser._install_chromium()
-        self.assertEqual(calls, ['https://a', 'https://b'])
+        self.assertEqual(calls, [('https://a', 'chromium'),
+                                 ('https://b', 'chromium'),
+                                 ('https://b', 'chromium-headless-shell')])
 
     def test_install_aggregates_all_failures(self):
-        pairs = [('https://a', 'a'), ('https://b', 'b')]
-
         def fake_run(cmd, **kwargs):
             raise CalledProcessError(1, cmd, stderr='Error: Download failure, code=1')
 
-        with patch.object(Browser, '_ordered_hosts', return_value=pairs), \
+        with patch.object(Browser, '_ordered_hosts',
+                          return_value=[('https://a', 'a'), ('https://b', 'b')]), \
+             patch.object(Browser, '_ensure_browser',
+                          side_effect=RuntimeError('download stalled')), \
              patch.object(browser_module.subprocess, 'run', side_effect=fake_run):
             with self.assertRaises(FigmaError) as ctx:
                 Browser._install_chromium()
-        self.assertIn('a: Error: Download failure, code=1', str(ctx.exception))
-        self.assertIn('b: Error: Download failure, code=1', str(ctx.exception))
+        message = str(ctx.exception)
+        self.assertIn('a: download stalled', message)
+        self.assertIn('b: download stalled', message)
+        self.assertIn('playwright-installer: Error: Download failure, code=1', message)
+
+    def test_install_cli_last_resort_succeeds(self):
+        with patch.object(Browser, '_ordered_hosts', return_value=[]), \
+             patch.object(browser_module.subprocess, 'run'):
+            Browser._install_chromium()
 
 
 if __name__ == '__main__':
