@@ -2,11 +2,15 @@
 
 Thanks for your interest in improving Fig Backup! Bug reports, fixes, and features are all
 welcome — open an [issue](https://github.com/danialshirali16/Fig-Backup/issues) or a pull request.
+Questions and ideas belong in [Discussions](https://github.com/danialshirali16/Fig-Backup/discussions)
+instead. Everyone taking part is expected to follow the
+[Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## Development setup
 
-macOS or Windows with Python 3.9+ and Node.js 22+ (Node is only needed for UI changes — `dist/`
-ships prebuilt):
+macOS or Windows with Python 3.11+ and Node.js 22+ (Node is only needed for UI changes — `dist/`
+ships prebuilt). CI and both release builds pin the same versions, so 3.11 is the floor that is
+actually tested:
 
 ```sh
 python3 -m venv .venv
@@ -35,7 +39,7 @@ npm run build
 - **Docs move with behavior.** User-facing changes belong in `README.md`; architecture and flow
   details in `docs/ARCHITECTURE.md` and `docs/UI.md`.
 - Match the style of the surrounding code: the backend is plain Python (stdlib + type hints), the
-  interface is React 18 + Tailwind v4 + shadcn/ui (nova).
+  interface is React 19 + Tailwind v4 + shadcn/ui (nova).
 
 ## Packaging
 

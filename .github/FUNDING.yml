@@ -1,1 +1,3 @@
-custom: ['https://github.com/danialshirali16/Fig-Backup#donate']
+# The Sponsor button previously pointed at this repository's own README anchor,
+# which linked straight back to itself. Point it at a real page instead.
+custom: ['https://github.com/danialshirali16/Fig-Backup/blob/main/docs/DONATE.md']

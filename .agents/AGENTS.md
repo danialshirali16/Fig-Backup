@@ -7,7 +7,7 @@ Read this before making changes; it encodes decisions the maintainer has already
 
 Fig Backup is a local desktop app (macOS Apple Silicon + Windows) that backs up Figma files as
 native `.fig` files by automating the web editor's *Save local copy* flow. The Python backend
-(`figma_backup/`) sits behind a pywebview bridge; the React 18 + Tailwind v4 + shadcn/ui (nova)
+(`figma_backup/`) sits behind a pywebview bridge; the React 19 + Tailwind v4 + shadcn/ui (nova)
 interface lives in `src/` and is built into the tracked `dist/`.
 
 Read first, in this order: `docs/ARCHITECTURE.md` · `docs/UI.md` · `CONTRIBUTING.md` ·

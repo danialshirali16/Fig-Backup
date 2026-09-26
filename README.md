@@ -16,8 +16,9 @@
 </p>
 
 **Save native copies of your Figma files to your computer.** Fig Backup is a free desktop app for
-Apple Silicon Macs and Windows 10/11. It saves Figma Design files as `.fig`, FigJam files as
-`.jam`, and Figma Slides as `.deck`.
+Apple Silicon Macs (macOS 12 or later) and Windows 10/11. It saves Figma Design files as `.fig`,
+FigJam files as `.jam`, and Figma Slides as `.deck`. The interface speaks 9 languages, including
+right-to-left layouts for فارسی.
 
 <p align="center">
   <img src="docs/screenshots/cover.png" alt="Fig Backup cover — native .fig backups from Figma, free local desktop app for macOS and Windows" width="100%">
@@ -91,20 +92,52 @@ use a shared computer account. A `FIGMA_PAT` environment variable can override i
 launches. See [SECURITY.md](SECURITY.md) for details. Use the app only with files you are
 authorized to access.
 
+## Documentation
+
+| | |
+| --- | --- |
+| [Troubleshooting](docs/TROUBLESHOOTING.md) | Gatekeeper, SmartScreen, WebView2, setup failures, HTTP 403/451 |
+| [Changelog](CHANGELOG.md) | What changed in every release |
+| [Architecture](docs/ARCHITECTURE.md) | How the backend, browser bridge, and interface fit together |
+| [Interface guide](docs/UI.md) | Design tokens, component conventions, and accessibility rules |
+| [Security](SECURITY.md) | How your token is stored and what the app does and does not send |
+| [Contributing](CONTRIBUTING.md) | Development setup and conventions |
+| [Code of Conduct](CODE_OF_CONDUCT.md) | What is expected of everyone taking part |
+
+Looking for this page in another language? The README is translated into
+[فارسی](docs/readme/README.fa.md) · [العربية](docs/readme/README.ar.md) ·
+[Deutsch](docs/readme/README.de.md) · [Español](docs/readme/README.es.md) ·
+[Français](docs/readme/README.fr.md) · [Português](docs/readme/README.pt-BR.md) ·
+[Русский](docs/readme/README.ru.md) · [Türkçe](docs/readme/README.tr.md) ·
+[中文](docs/readme/README.zh-CN.md) · [日本語](docs/readme/README.ja.md)
+
 ## Help and contributing
 
 Having trouble installing, signing in, or downloading? Read
-[Troubleshooting](docs/TROUBLESHOOTING.md). Bug reports and contributions are welcome; see
-[CONTRIBUTING.md](CONTRIBUTING.md).
+[Troubleshooting](docs/TROUBLESHOOTING.md).
 
-Fig Backup is an independent project and is not affiliated with Figma. It is released under the
-[MIT License](LICENSE).
+Questions, ideas, and "is this supposed to happen?" — those belong in
+[Discussions](https://github.com/danialshirali16/Fig-Backup/discussions), not in an issue. Bugs and
+feature requests are welcome on the [issue tracker](https://github.com/danialshirali16/Fig-Backup/issues);
+please read [the pinned issue](https://github.com/danialshirali16/Fig-Backup/issues/1) first, it
+covers the most common reports. Contributions are welcome — see
+[CONTRIBUTING.md](CONTRIBUTING.md) and the [Code of Conduct](CODE_OF_CONDUCT.md).
+
+## Legal
+
+Fig Backup is an independent project. It is not affiliated with, endorsed by, or sponsored by
+Figma, Inc. Fig, Figma, FigJam, Figma Slides, and the Figma logo are trademarks of Figma, Inc.; they
+are used here only to describe what the app works with.
+
+The app talks to Figma's REST API using a personal access token that **you** generate and own, under
+[Figma's API terms](https://www.figma.com/developers/api#access-tokens). It also drives a local
+browser you are already signed into, which is a best-effort integration: if Figma changes its web
+interface, an app update may be needed. Use it only with files you are authorized to access.
+
+Released under the [MIT License](LICENSE).
 
 ## Donate
 
-If Fig Backup saves you time, support its development with Bitcoin:
-
-<p align="center">
-  <img src="docs/screenshots/donate-qr.png" alt="Bitcoin donation QR code" width="180"><br>
-  <code>bc1qf9dufwjyzp7u56lysgn2a0n2956y6xm5dzq6q4</code>
-</p>
+Fig Backup is free, has no ads, no telemetry, and no paid tier. If it saves you time, you can
+[support its development](docs/DONATE.md) with Bitcoin — or just star the repository, report a bug,
+or translate this page into a language it is missing.
