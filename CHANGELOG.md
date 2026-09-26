@@ -9,15 +9,44 @@ binaries for every version below match the tag exactly.
 
 ## [Unreleased]
 
-Work in progress on the next release. Notable items already merged since `v0.3.0`:
+Nothing yet.
 
-- Frameless-window resizing on Windows is fixed. The native window handle arrives from pythonnet as
-  a `System.IntPtr`, which does not convert to a Python `int`; pywebview always calls `.ToInt32()`,
-  so resizing failed outright on Windows.
-- A per-file `403` is now treated as a failure for that file instead of invalidating the whole
-  browser session, so one restricted file no longer aborts a team-wide backup.
-- The setup flow and the Chromium downloader were reworked. Setup now prefers an already-installed
-  Chrome or Edge and only falls back to downloading Chromium (about 325 MB) when neither can run.
+## [1.0.0] — 2026-09-26
+
+The first stable release. The Chromium downloader and the setup flow were reworked, file-name
+conflicts are resolved by asking instead of silently renaming, and two platform bugs that broke
+Windows resizing and large backups are fixed.
+
+### Added
+
+- **File-name conflict resolution.** When a *different* file already occupies the name a new one
+  wants, the run pauses and asks whether to keep both or replace. Previously the app silently wrote
+  `name (1).fig`. Re-downloading a file you already have is still recognised by its key and is not
+  treated as a conflict.
+- **Setup prefers a browser you already have.** An installed Chrome or Edge is used when one can
+  run; Chromium is only downloaded (about 325 MB) when neither is available.
+- **A downloader that survives a flaky network.** Chromium is fetched with Python range requests,
+  falls back across mirror hosts, falls back to the pinned version when `--version` prints nothing,
+  and uses the Playwright CLI only as a last resort.
+- Breadcrumb navigation in the header, with file-type icons resolved on demand once a listing is on
+  screen, so folders appear without waiting on a type lookup.
+
+### Fixed
+
+- **Frameless-window resizing on Windows.** The native window handle arrives from pythonnet as a
+  `System.IntPtr`, which deliberately does not convert to a Python `int`; pywebview always calls
+  `.ToInt32()`. Resizing the window failed outright.
+- **A per-file `403` no longer kills the run.** It is now recorded as a failure for that file
+  instead of invalidating the whole browser session, so one restricted file no longer aborts a
+  team-wide backup.
+- Right-to-left chrome in the setup flow, and the wizard card's framing and footer weighting.
+
+### Changed
+
+- Documentation: a [changelog](CHANGELOG.md), a code of conduct, a donate page, and a Documentation
+  section in the README that finally links `docs/`.
+- The repository now carries a social preview image, topics, and a corrected release-notes language
+  list.
 
 ## [0.3.0] — 2026-09-25
 
@@ -58,7 +87,8 @@ First public release.
   `name(1).fig` naming.
 - Light, dark, and system themes, right-to-left layout support, and reduced-motion support.
 
-[Unreleased]: https://github.com/danialshirali16/Fig-Backup/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/danialshirali16/Fig-Backup/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/danialshirali16/Fig-Backup/compare/v0.3.0...v1.0.0
 [0.3.0]: https://github.com/danialshirali16/Fig-Backup/compare/v0.2.0...v0.3.0
 [0.2.1-rc.1]: https://github.com/danialshirali16/Fig-Backup/compare/v0.2.0...v0.2.1-rc.1
 [0.2.0]: https://github.com/danialshirali16/Fig-Backup/releases/tag/v0.2.0

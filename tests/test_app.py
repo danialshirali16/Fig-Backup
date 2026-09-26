@@ -1,4 +1,5 @@
 import ctypes
+import json
 import threading
 import time
 import tempfile
@@ -9,8 +10,9 @@ from pathlib import Path
 from unittest.mock import patch
 from playwright._impl._errors import TargetClosedError
 
+import figma_backup.app as app_module
 from figma_backup.app import Bridge, _reveal_in_explorer
-from figma_backup.core import BrowserAuthError, FigmaError, PreferencesStore, TreeArchiveIndex
+from figma_backup.core import ArchiveIndex, BrowserAuthError, FigmaError, FileConflict, PreferencesStore, TreeArchiveIndex
 
 
 class Client:
@@ -48,7 +50,7 @@ class FigmaFilesClient(Client):
 
 
 class Browser:
-    def download(self, file, index, progress):
+    def download(self, file, index, progress, overwrite=False):
         progress('saving', 'Saving')
         return {'status': 'saved', 'path': '/tmp/A.fig', 'size': 2048}
 
@@ -83,12 +85,89 @@ class ForbiddenOnceBrowser(Browser):
     def __init__(self):
         self.seen = 0
 
-    def download(self, file, index, progress):
+    def download(self, file, index, progress, overwrite=False):
         self.seen += 1
         if self.seen == 1:
             raise FigmaError('Figma refused to open this file (HTTP 403).', 403)
         progress('saving', 'Saving')
         return {'status': 'saved', 'path': '/tmp/B.fig', 'size': 2048}
+
+
+class IntPtrLike:
+    """Stands in for pythonnet's System.IntPtr on Windows.
+
+    pythonnet explicitly refuses to convert IntPtr to a Python int, and pywebview
+    always calls .ToInt32() on a Form handle. A bare int(handle) therefore raises,
+    which would break resizing on the deliberately frameless Windows window.
+    """
+
+    def __init__(self, value):
+        self._value = value
+
+    def __int__(self):
+        raise TypeError('cannot convert System.IntPtr to int')
+
+    def __bool__(self):
+        return True
+
+    def ToInt64(self):
+        return self._value
+
+    def ToInt32(self):
+        return self._value
+
+
+class WindowsResizeTests(unittest.TestCase):
+    """Runs on every platform by standing in for the Windows runtime."""
+
+    def setUp(self):
+        self.sent = {}
+        sent = self.sent
+
+        class User32:
+            def ReleaseCapture(self):
+                sent['released'] = True
+
+            def SendMessageW(self, hwnd, message, wparam, lparam):
+                sent['call'] = (hwnd, message, wparam, lparam)
+
+        class Windll:
+            user32 = User32()
+
+        class Native:
+            def __init__(self, value):
+                self.Handle = IntPtrLike(value)
+
+        class Window:
+            def __init__(self, value):
+                self.native = Native(value)
+
+        self.patch = [
+            patch.object(app_module.sys, 'platform', 'win32'),
+            patch.object(app_module.ctypes, 'windll', Windll(), create=True),
+            patch.object(app_module.webview, 'windows', [Window(0x1A2B)]),
+        ]
+        for item in self.patch:
+            item.start()
+        self.addCleanup(lambda: [item.stop() for item in self.patch])
+
+    def test_resize_hands_a_real_handle_to_the_sizing_loop(self):
+        bridge = Bridge.__new__(Bridge)
+        bridge.maximized = False
+        self.assertEqual(bridge.begin_resize(12), {'ok': True})
+        self.assertTrue(self.sent.get('released'))
+        hwnd, message, wparam, lparam = self.sent['call']
+        self.assertEqual(hwnd, 0x1A2B, 'the HWND must survive the IntPtr conversion')
+        self.assertEqual(message, 0xA1, 'WM_NCLBUTTONDOWN')
+        self.assertEqual(wparam, 12, 'HTTOP')
+
+    def test_resize_is_refused_when_maximized_or_off_edge(self):
+        bridge = Bridge.__new__(Bridge)
+        bridge.maximized = True
+        self.assertEqual(bridge.begin_resize(12), {'ok': False})
+        bridge.maximized = False
+        self.assertEqual(bridge.begin_resize(4), {'ok': False})
+        self.assertNotIn('call', self.sent)
 
 
 class BridgeTests(unittest.TestCase):
@@ -109,6 +188,7 @@ class BridgeTests(unittest.TestCase):
         bridge = self.make_bridge(Browser())
         with patch('figma_backup.app.TreeArchiveIndex') as index:
             index.return_value.root = Path('/tmp/Fig Backup/Team')
+            index.return_value.plan.return_value = (None, None)
             bridge._run_download({'scope': 'folder', 'team': {'id': '10', 'name': 'Team'},
                                   'folder': {'id': '44', 'name': 'Folder'}})
         state = bridge.status()
@@ -133,7 +213,7 @@ class BridgeTests(unittest.TestCase):
             calls = 0
             stopped = False
 
-            def download(self, file, index, progress):
+            def download(self, file, index, progress, overwrite=False):
                 self.calls += 1
                 if self.calls == 1:
                     raise TargetClosedError('closed')
@@ -148,7 +228,8 @@ class BridgeTests(unittest.TestCase):
 
         browser = ClosingBrowser()
         bridge = self.make_bridge(browser)
-        with patch('figma_backup.app.ArchiveIndex'):
+        with patch('figma_backup.app.ArchiveIndex') as index:
+            index.return_value.plan.return_value = (None, None)
             bridge._run_download({'scope': 'file', 'team': {'id': '10', 'name': 'Team'},
                                   'folder': {'id': '44'}, 'file_key': 'a'})
         self.assertEqual(bridge.status()['saved'], 1)
@@ -167,6 +248,7 @@ class BridgeTests(unittest.TestCase):
         bridge.client = RestrictedClient()
         with patch('figma_backup.app.TreeArchiveIndex') as index:
             index.return_value.root = Path('/tmp/Fig Backup/Team')
+            index.return_value.plan.return_value = (None, None)
             bridge._run_download({'scope': 'folder', 'team': {'id': '10', 'name': 'Team'},
                                   'folder': {'id': '44', 'name': 'Folder'}})
         state = bridge.status()
@@ -184,6 +266,7 @@ class BridgeTests(unittest.TestCase):
         bridge.stop_requested = True
         with patch('figma_backup.app.TreeArchiveIndex') as index:
             index.return_value.root = Path('/tmp/Fig Backup/Team')
+            index.return_value.plan.return_value = (None, None)
             bridge._run_download({'scope': 'folder', 'team': {'id': '10', 'name': 'Team'},
                                   'folder': {'id': '44', 'name': 'Folder'}})
         state = bridge.status()
@@ -230,13 +313,14 @@ class BridgeTests(unittest.TestCase):
 
     def test_browser_auth_error_stops_queue_with_attention(self):
         class AuthRequiredBrowser(Browser):
-            def download(self, file, index, progress):
+            def download(self, file, index, progress, overwrite=False):
                 raise BrowserAuthError('Browser sign-in is required. Use the Sign in button, then retry.')
 
         bridge = self.make_bridge(AuthRequiredBrowser())
         bridge.client = FigmaFilesClient()
         with patch('figma_backup.app.TreeArchiveIndex') as index:
             index.return_value.root = Path('/tmp/Fig Backup/Team')
+            index.return_value.plan.return_value = (None, None)
             bridge._run_download({'scope': 'folder', 'team': {'id': '10', 'name': 'Team'},
                                   'folder': {'id': '44', 'name': 'Folder'}})
         state = bridge.status()
@@ -534,6 +618,7 @@ class EditorForbiddenTests(unittest.TestCase):
             index.root = Path('/tmp/Fig Backup/Team')
             index.folder_path.return_value = Path('/tmp/Fig Backup/Team')
             index.target.return_value = (Path('/tmp/Fig Backup/Team/A.fig'), False)
+            index.plan.return_value = (None, None)
             with patch('figma_backup.app.TreeArchiveIndex', return_value=index):
                 bridge._run_download({'scope': 'folder', 'team': {'id': '10', 'name': 'Team'},
                                       'folder': {'id': '44', 'name': 'Folder'}})
@@ -550,6 +635,7 @@ class EditorForbiddenTests(unittest.TestCase):
             index.root = Path('/tmp/Fig Backup/Team')
             index.folder_path.return_value = Path('/tmp/Fig Backup/Team')
             index.target.return_value = (Path('/tmp/Fig Backup/Team/A.fig'), False)
+            index.plan.return_value = (None, None)
             with patch('figma_backup.app.TreeArchiveIndex', return_value=index):
                 bridge._run_download({'scope': 'folder', 'team': {'id': '10', 'name': 'Team'},
                                       'folder': {'id': '44', 'name': 'Folder'}})
@@ -558,3 +644,163 @@ class EditorForbiddenTests(unittest.TestCase):
         failed = [item for item in state['items'] if item['status'] == 'failed']
         self.assertEqual(len(failed), 1)
         self.assertIn('403', failed[0]['detail'])
+
+
+class ConflictBrowser(Browser):
+    """Resolves the destination the way a real index does, so conflicts are real."""
+
+    def __init__(self, taken=()):
+        self.taken = set(taken)
+        self.calls = []
+
+    def download(self, file, index, progress, overwrite=False):
+        self.calls.append((file['key'], overwrite))
+        wanted, existing = index.plan(file)
+        if existing is not None and not overwrite:
+            raise FileConflict(wanted, existing)
+        progress('saving', 'Saving')
+        return {'status': 'saved', 'path': str(wanted), 'size': 2048}
+
+
+class OneFileClient(Client):
+    """A team with exactly one file, so a run pauses on the first one it meets."""
+
+    def all_files(self, folder):
+        return [{'key': 'a', 'name': 'A', 'editorType': 'figma'}]
+
+
+class FileConflictTests(unittest.TestCase):
+    """A name clash must pause the run, not silently rename or clobber."""
+
+    def setUp(self):
+        self.browser = ConflictBrowser()
+        self.bridge = BridgeTests.make_bridge(self.browser)
+        self.bridge.client = OneFileClient()
+        # make_bridge bypasses __init__, so give it the two attributes the
+        # conflict path touches. A mocked executor means resume stays under the
+        # test's control instead of firing on a background thread.
+        self.bridge._run = None
+        self.bridge.executor = unittest.mock.MagicMock()
+        self.taken = Path('/tmp/Fig Backup/Team/A.fig')
+        self.wanted = Path('/tmp/Fig Backup/Team/A.fig')
+        patcher = patch('figma_backup.app.TreeArchiveIndex')
+        self.archive_cls = patcher.start()
+        self.addCleanup(patcher.stop)
+        self.archive = self.archive_cls.return_value
+        self.archive.root = Path('/tmp/Fig Backup/Team')
+        self.archive.folder_path.return_value = Path('/tmp/Fig Backup/Team')
+        self.archive.plan.return_value = (self.wanted, self.taken)
+
+    def _run(self):
+        self.bridge._run_download({'scope': 'folder', 'team': {'id': '10', 'name': 'Team'},
+                                   'folder': {'id': '44', 'name': 'Folder'}})
+        return self.bridge.status()
+
+    def test_a_clash_pauses_the_run_and_asks(self):
+        state = self._run()
+        self.assertEqual(state['phase'], 'conflict', 'the run must wait, not decide for the user')
+        self.assertFalse(state['finished'])
+        self.assertTrue(state['running'], 'the run is still alive, just waiting')
+        self.assertEqual(state['conflict']['existing'], 'A.fig')
+        self.assertEqual(state['conflict']['name'], 'A')
+        self.assertEqual(state['conflict']['key'], 'a')
+
+    def test_nothing_is_downloaded_before_the_user_answers(self):
+        self._run()
+        self.assertEqual(self.browser.calls, [], 'no copy may start while the question is open')
+
+    def test_the_paused_item_is_marked_waiting(self):
+        state = self._run()
+        self.assertEqual(state['items'][0]['status'], 'conflict')
+
+    def test_overwrite_reaches_the_index(self):
+        self._run()
+        self.bridge.resolve_conflict('overwrite')
+        self.bridge._run_download({'scope': 'folder', 'team': {'id': '10', 'name': 'Team'},
+                                   'folder': {'id': '44', 'name': 'Folder'}}, 0, {'a': 'overwrite'})
+        self.assertEqual(self.browser.calls[-1], ('a', True), 'overwrite must reach the index')
+
+    def test_rename_keeps_both_files(self):
+        self._run()
+        self.bridge.resolve_conflict('rename')
+        self.bridge._run_download({'scope': 'folder', 'team': {'id': '10', 'name': 'Team'},
+                                   'folder': {'id': '44', 'name': 'Folder'}}, 0, {'a': 'rename'})
+        self.assertEqual(self.browser.calls[-1], ('a', False), 'rename keeps both, so no overwrite')
+
+    def test_cancel_skips_the_file_and_continues(self):
+        self._run()
+        self.bridge.resolve_conflict('cancel')
+        state = self.bridge.status()
+        self.assertEqual(state['items'][0]['status'], 'skipped')
+        self.assertEqual(state['phase'], 'downloading', 'the queue carries on')
+        self.assertIsNone(state['conflict'], 'the question must be cleared')
+        self.assertEqual(state['skipped'], 1)
+
+    def test_resolving_without_a_question_is_an_error(self):
+        with self.assertRaisesRegex(FigmaError, 'No file is waiting'):
+            self.bridge.resolve_conflict('overwrite')
+
+    def test_an_unknown_choice_is_rejected(self):
+        self._run()
+        with self.assertRaisesRegex(FigmaError, 'overwrite, rename, or cancel'):
+            self.bridge.resolve_conflict('maybe')
+
+    def test_a_rejected_choice_keeps_the_question_open(self):
+        self._run()
+        with self.assertRaises(FigmaError):
+            self.bridge.resolve_conflict('maybe')
+        self.assertEqual(self.bridge.status()['conflict']['key'], 'a')
+
+    def test_stopping_while_paused_ends_the_run(self):
+        self._run()
+        self.bridge.stop_download()
+        state = self.bridge.status()
+        self.assertEqual(state['phase'], 'stopped')
+        self.assertIsNone(state['conflict'], 'the dialog must not stay open with no way out')
+        self.assertTrue(state['finished'])
+
+    def test_an_already_indexed_file_is_not_a_clash(self):
+        with tempfile.TemporaryDirectory() as directory:
+            support, downloads = Path(directory) / 'support', Path(directory) / 'Downloads'
+            support.mkdir(); downloads.mkdir()
+            (support / 'downloads.json').write_text(
+                json.dumps({'version': 1, 'files': {'a': 'A.fig'}}), encoding='utf-8')
+            index = ArchiveIndex(support=support, downloads=downloads)
+            wanted, taken = index.plan({'key': 'a', 'name': 'A', 'editorType': 'figma'})
+            self.assertIsNone(wanted)
+            self.assertIsNone(taken, 'our own earlier copy is "already saved", not a question')
+
+    def test_a_different_file_with_the_same_name_is_a_clash(self):
+        with tempfile.TemporaryDirectory() as directory:
+            support, downloads = Path(directory) / 'support', Path(directory) / 'Downloads'
+            support.mkdir(); downloads.mkdir()
+            (downloads / 'Other.fig').write_bytes(b'x' * 2048)
+            index = ArchiveIndex(support=support, downloads=downloads)
+            wanted, taken = index.plan({'key': 'zzz', 'name': 'Other', 'editorType': 'figma'})
+            self.assertEqual(wanted.name, 'Other.fig')
+            self.assertEqual(taken.name, 'Other.fig')
+
+    def test_plan_reports_nothing_when_the_name_is_free(self):
+        with tempfile.TemporaryDirectory() as directory:
+            support, downloads = Path(directory) / 'support', Path(directory) / 'Downloads'
+            support.mkdir(); downloads.mkdir()
+            index = ArchiveIndex(support=support, downloads=downloads)
+            wanted, taken = index.plan({'key': 'new', 'name': 'Fresh', 'editorType': 'figma'})
+            self.assertEqual(wanted.name, 'Fresh.fig')
+            self.assertIsNone(taken)
+
+    def test_overwrite_policy_claims_the_wanted_name(self):
+        with tempfile.TemporaryDirectory() as directory:
+            support, downloads = Path(directory) / 'support', Path(directory) / 'Downloads'
+            support.mkdir(); downloads.mkdir()
+            (downloads / 'A.fig').write_bytes(b'x' * 2048)
+            # Two independent indexes: the first call records a mapping for its
+            # key, so reusing the key would take the already-indexed path.
+            renamed = ArchiveIndex(support=support, downloads=downloads)
+            self.assertEqual(
+                renamed.target({'key': 'k1', 'name': 'A', 'editorType': 'figma'})[0].name,
+                'A(1).fig', 'rename is the default')
+            replaced = ArchiveIndex(support=support, downloads=downloads)
+            self.assertEqual(
+                replaced.target({'key': 'k2', 'name': 'A', 'editorType': 'figma'}, overwrite=True)[0].name,
+                'A.fig', 'overwrite claims the name that is already there')

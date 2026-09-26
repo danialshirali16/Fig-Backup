@@ -34,6 +34,19 @@ class BrowserAuthError(FigmaError):
     """Browser-session failures that must stop the whole queue until the user signs in."""
 
 
+class FileConflict(FigmaError):
+    """A different file already occupies the name this one wants.
+
+    Raised before anything is written, so the run can pause and ask rather than
+    silently renaming or clobbering.
+    """
+
+    def __init__(self, wanted: Path, existing: Path):
+        super().__init__(f"{wanted.name} already exists")
+        self.wanted = wanted
+        self.existing = existing
+
+
 # Windows refuses to create files whose stem (text before the first dot) is a
 # device name, whatever the extension — "CON.fig" is as invalid as "CON".
 WINDOWS_RESERVED_STEMS = frozenset(
@@ -188,7 +201,21 @@ class ArchiveIndex:
                 return filename
             number += 1
 
-    def target(self, file: dict) -> tuple[Path, bool]:
+    def plan(self, file: dict) -> tuple[Path | None, Path | None]:
+        """The name this file would naturally take, and what already sits there.
+
+        Both are None when the key is already indexed: that is the same file we
+        already backed up, not a clash with a different one.
+        """
+        key = str(file["key"])
+        if key in self.names:
+            return None, None
+        wanted = self.downloads / f"{clean_name(file.get('name'))}{native_extension(file.get('editorType'))}"
+        reserved = {value.casefold() for value in self.names.values()}
+        taken = wanted.name.casefold() in reserved or wanted.exists()
+        return wanted, wanted if taken else None
+
+    def target(self, file: dict, overwrite: bool = False) -> tuple[Path, bool]:
         key = str(file["key"])
         extension = native_extension(file.get("editorType"))
         if key in self.names:
@@ -196,14 +223,17 @@ class ArchiveIndex:
             if Path(recorded).suffix.lower() == extension:
                 return self.downloads / recorded, False
             # The recorded extension disagrees with the file's editor type: an
-            # older build, or the legacy Figma Fig Downloader, named every file
+            # older build, or the legacy Figma Fig Downloader, named everything
             # .fig. Re-point the entry instead of failing the run forever.
             name = self._available(Path(recorded).stem or clean_name(file.get("name")),
                                    extension, ignore=key)
             self.names[key] = name
             write_json(self.path, {"version": 1, "files": self.names})
             return self.downloads / name, False
-        filename = self._available(clean_name(file.get("name")), extension)
+        if overwrite:
+            filename = f"{clean_name(file.get('name'))}{extension}"
+        else:
+            filename = self._available(clean_name(file.get("name")), extension)
         destination = self.downloads / filename
         migrated = False
         if re.fullmatch(r"[A-Za-z0-9_-]+", key):
@@ -295,7 +325,24 @@ class TreeArchiveIndex:
         for ancestors in folders:
             self.folder_path(ancestors).mkdir(parents=True, exist_ok=True)
 
-    def target(self, file: dict) -> tuple[Path, bool]:
+    def plan(self, file: dict) -> tuple[Path | None, Path | None]:
+        """The name this file would naturally take, and what already sits there.
+
+        Both are None when the key is already indexed: that is the same file we
+        already backed up, not a clash with a different one.
+        """
+        key = str(file["key"])
+        if key in self.files:
+            return None, None
+        directory = self.root / self.folder_path(file["_folder_path"]).relative_to(self.root)
+        wanted = directory / f"{clean_name(file.get('name'))}{native_extension(file.get('editorType'))}"
+        relative = directory.relative_to(self.root)
+        reserved = {Path(value).name.casefold() for value in self.files.values()
+                    if Path(value).parent == relative}
+        taken = wanted.name.casefold() in reserved or wanted.exists()
+        return wanted, wanted if taken else None
+
+    def target(self, file: dict, overwrite: bool = False) -> tuple[Path, bool]:
         key = str(file["key"])
         extension = native_extension(file.get("editorType"))
         if key in self.files:
@@ -322,7 +369,10 @@ class TreeArchiveIndex:
         relative = directory.relative_to(self.root)
         reserved = {Path(value).name.casefold() for value in self.files.values()
                     if Path(value).parent == relative}
-        name = self._available_name(clean_name(file.get("name")), reserved, directory, extension)
+        if overwrite:
+            name = f"{clean_name(file.get('name'))}{extension}"
+        else:
+            name = self._available_name(clean_name(file.get("name")), reserved, directory, extension)
         destination = directory / name
         self.files[key] = (relative / name).as_posix()
         self._save()

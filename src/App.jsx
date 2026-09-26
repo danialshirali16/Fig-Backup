@@ -38,7 +38,6 @@ const STEP_KEY = { checking: 'stepOpening', opening: 'stepOpening', preparing: '
 const LIVE_FILE_STATES = [...Object.keys(STEP_KEY)]
 /* Runs that ended badly get their own band: under "In Progress" a failed row
    reads as "still working on it". */
-const ATTENTION_STATES = ['failed', 'stopped']
 /* Terminal states that still offer a per-row Retry, so a new download must not drop them. */
 const RETRYABLE_STATES = ['failed', 'stopped', 'partial', 'skipped']
 
@@ -669,6 +668,18 @@ function App() {
       await sleep(400)
     }
   }
+  async function resolveConflict(choice) {
+    if (busy) return
+    setBusy('conflict')
+    try {
+      await api.resolve_conflict(choice)
+    } catch (err) {
+      setError(firstLine(err))
+    } finally {
+      setBusy('')
+    }
+  }
+
   function routeToSignin() {
     setQueueOpen(false)
     openWizard('browser')
@@ -821,7 +832,10 @@ function App() {
   const scanSeconds = scanning && scanStartRef.current ? Math.max(0, Math.floor((Date.now() - scanStartRef.current) / 1000)) : 0
   const scanLabel = scanSeconds ? `${Math.floor(scanSeconds / 60)}:${String(scanSeconds % 60).padStart(2, '0')}` : ''
   const runningRows = queue.filter(item => item.status === 'queued' || item.status === 'running')
-  const attentionRows = queue.filter(item => ATTENTION_STATES.includes(item.status))
+  const waitingRow = queue.find(item => item.status === 'conflict') || null
+  // partial/skipped are terminal but still offer a per-row Retry, so they
+  // belong here; leaving them out made those rows invisible in every band.
+  const attentionRows = queue.filter(item => RETRYABLE_STATES.includes(item.status))
   const completedRows = queue.filter(item => item.status === 'done')
   const clearable = completedRows.length > 0
 
@@ -844,6 +858,37 @@ function App() {
     const match = /subfolders for (\d+) folder/.exec(String(w || ''))
     return match ? t('subfolderWarning', { count: match[1] }) : w
   }
+  /* A run paused on a name clash waits here. The whole run is behind a scrim:
+     the queue is still alive underneath, so this must read as temporary. */
+  const conflict = progress.conflict
+  const conflictDialog = conflict && (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center p-6">
+      <div className="absolute inset-0 bg-black/40" aria-hidden="true" />
+      <Card
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="conflict-title"
+        aria-describedby="conflict-body"
+        className="relative w-full max-w-sm gap-0 px-4 py-4 shadow-xl"
+      >
+        <div className="flex gap-3">
+          <AlertTriangle className="mt-px size-5 shrink-0 text-destructive" aria-hidden="true" />
+          <div className="min-w-0">
+            <h2 id="conflict-title" className="text-sm font-semibold">{t('conflictTitle')}</h2>
+            <p id="conflict-body" className="mt-1 text-xs leading-relaxed text-muted-foreground">
+              {t('conflictBody', { name: conflict.existing })}
+            </p>
+          </div>
+        </div>
+        <div className="mt-4 flex flex-wrap justify-end gap-2">
+          <Button onClick={() => resolveConflict('overwrite')}>{t('conflictOverwrite')}</Button>
+          <Button variant="outline" onClick={() => resolveConflict('rename')}>{t('conflictRename')}</Button>
+          <Button variant="outline" onClick={() => resolveConflict('cancel')}>{t('conflictCancel')}</Button>
+        </div>
+      </Card>
+    </div>
+  )
+
   /* ---------- wizard ---------- */
   const wizard = view === 'wizard' && (
     <Card className="mx-auto w-full max-w-[640px] px-5 py-4">
@@ -989,9 +1034,12 @@ function App() {
       }
       return <span>{setupPending ? t('setupWaiting') : t('running')}</span>
     }
+    if (item.status === 'conflict') return <span>{t('conflictTitle')}</span>
     if (item.status === 'stopped') return <span>{item.detail || t('statusStopped')}</span>
     if (item.status === 'failed') return <span className="text-destructive">{item.detail || t('statusFailed')}</span>
-    if (item.status === 'partial' || item.status === 'skipped') return <span>{item.detail || t('skipped')}</span>
+    if (item.status === 'partial' || item.status === 'skipped') {
+      return <span>{item.detail === 'conflict' ? t('conflictSkipped') : (item.detail || t('skipped'))}</span>
+    }
     /* Say what the run really did. A file that was already on disk reported no
        size, so claiming "Saved" (or a byte count) for it would be a lie. */
     if (item.outcome === 'renamed') return <span>{t('statusRenamed')}</span>
@@ -1093,6 +1141,15 @@ function App() {
         </div>
       )}
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+        {waitingRow && (
+          <section>
+            <div className="flex items-center justify-between border-y border-warning/40 bg-warning/10 px-4 py-1.5">
+              <h3 className="text-xs font-medium text-warning-text">{t('conflictTitle')}</h3>
+              <span aria-hidden="true" className="text-xs tabular-nums text-warning-text">1</span>
+            </div>
+            <div className="py-1">{downloadRow(waitingRow)}</div>
+          </section>
+        )}
         {runningRows.length > 0 && (
           <section>
             <div className="flex items-center justify-between border-y border-border bg-muted px-4 py-1.5">
@@ -1190,6 +1247,7 @@ function App() {
       </header>
 
       <main id="main" className={'mx-auto w-full max-w-[680px] flex-1 ' + (view === 'wizard' ? 'px-4 pt-5 pb-6' : 'px-2 pt-4 pb-8')}>
+        {conflictDialog}
         {error && (() => {
           const { title, hint, detail } = describeApiError(error, t)
           return (

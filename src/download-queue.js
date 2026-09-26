@@ -18,9 +18,12 @@ export function summarizeDownloadRun(status, queueName, translate) {
   const filesTotal = Math.max(status?.total || 0, files.length)
   const failed = status?.phase === 'error' || status?.failed > 0
   const runStatus = status?.phase === 'stopped' ? 'stopped' : failed ? 'failed' : skipped ? (doneFiles.length ? 'partial' : 'skipped') : 'done'
+  // A skipped file usually knows *why* (an unsupported type, a name clash the
+  // user cancelled). That reason beats the generic "unsupported file type".
+  const skipReason = files.find(file => file.status === 'skipped' && file.detail)?.detail
   const skippedDetail = doneFiles.length
-    ? `${translate(filesTotal === 1 ? 'progressCountOne' : 'progressCount', { done: doneFiles.length, total: filesTotal })} · ${translate('skipped')}`
-    : translate('queueEmpty')
+    ? `${translate(filesTotal === 1 ? 'progressCountOne' : 'progressCount', { done: doneFiles.length, total: filesTotal })} · ${skipReason || translate('skipped')}`
+    : skipReason || translate('queueEmpty')
 
   return {
     status: runStatus,

@@ -73,6 +73,9 @@ export function installPreviewBridge() {
       rate: 'Figma is busy (HTTP 429).',
     }[apiErrorMode] || 'Something went wrong.')
   }
+  // `&conflict` pauses the run on a name clash so the dialog can be seen.
+  const conflictMode = params.has('conflict')
+  let conflictPending = null
   let stopRun = null
   const lag = () => new Promise(resolve => window.setTimeout(resolve, slowMode ? 1200 : 0))
   let browserState = fakeInstall ? { phase: 'setting_up', message: '' } : { phase: 'ready', message: '', source: 'chrome' }
@@ -100,7 +103,7 @@ export function installPreviewBridge() {
         has_token: true, teams: previewTeams, preferences,
         browser: { ...browserState },
         downloads: '/Users/you/Downloads',
-        version: '0.3.0',
+        version: '1.0.0',
       }),
       discover_teams: async () => lag().then(() => ({ teams: previewTeams, auth_required: false })),
       save_preferences: async changes => (preferences = { ...preferences, ...changes }),
@@ -151,6 +154,35 @@ export function installPreviewBridge() {
       file_types: async keys => lag().then(() => Object.fromEntries(
         (keys || []).map(key => [key, previewTypes[key] ?? 'figma']),
       )),
+      resolve_conflict: async choice => {
+        const pending = conflictPending
+        conflictPending = null
+        if (!pending) throw new Error('No file is waiting for a decision')
+        status = {
+          ...status, running: true, phase: 'downloading', conflict: null,
+          message: choice === 'cancel' ? 'Continuing with the rest of the queue' : 'Continuing…',
+          items: status.items.map(item => item.key === pending.key
+            ? { ...item, status: choice === 'cancel' ? 'skipped' : 'saving',
+                detail: choice === 'cancel' ? 'conflict' : '' }
+            : item),
+        }
+        if (choice !== 'cancel') {
+          setTimeout(() => {
+            status = {
+              ...status, running: false, phase: 'done', finished: true,
+              message: 'Download queue is ready',
+              items: status.items.map(item => item.key === pending.key
+                ? { ...item, status: 'saved', detail: '/Users/you/Downloads/' + (choice === 'rename' ? pending.name + '(1).fig' : pending.name), size: 2480000 }
+                : item),
+            }
+          }, 1800)
+        } else {
+          setTimeout(() => {
+            status = { ...status, running: false, phase: 'done', finished: true, message: 'Download queue is ready' }
+          }, 900)
+        }
+        return { resolved: choice }
+      },
       start_download: async () => {
         // Simulate the real lifecycle: scanning, then per-file checking/opening/preparing/saving.
         const files = ['Home Screen', 'Navigation', 'Profile Settings']
@@ -169,11 +201,26 @@ export function installPreviewBridge() {
           }, 500)
         }
         const savedUpTo = index => files.map((other, position) => ({
+          key: `sample-${position}`,
           name: other,
           status: position < index ? 'saved' : position === index ? null : 'queued',
           detail: position < index ? `~/Downloads/Fig Backup/Product Design/${other}.fig` : '',
           size: position < index ? sizes[position] : 0,
         }))
+        if (conflictMode) {
+          // Park the first file on a name clash; the UI then shows the question.
+          const pending = { key: 'conflict-key', name: files[0], wanted: files[0] + '.fig', existing: files[0] + '.fig', position: 0 }
+          status = {
+            ...status, phase: 'conflict', running: true, finished: false,
+            message: files[0], conflict: pending,
+            items: [{ key: pending.key, name: files[0], status: 'conflict', detail: '' }],
+          }
+          conflictPending = pending
+          stopRun = () => {
+            status = { ...status, running: false, phase: 'stopped', finished: true, conflict: null, message: 'Stopped' }
+          }
+          return { started: true }
+        }
         if (failFirstRun) {
           failFirstRun = false
           at(4400, () => {

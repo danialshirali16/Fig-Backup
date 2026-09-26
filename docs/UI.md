@@ -164,6 +164,22 @@ Esc closes it and returns focus to the control that opened it. The popover is no
 of the app remains available while a backup runs. It holds a **400px minimum height** (clamped to
 the available height) so it does not resize under the pointer when the first row arrives.
 
+## File name conflicts
+
+The folder listings never carry a file's editor type, but the destination name is known before
+anything is written, so a clash is detected up front: the run **pauses** and asks, rather than
+silently renaming or replacing something. The dialog is a `Card` with the question, and three
+buttons — *Overwrite* (primary), *Rename* and *Cancel* (both outline).
+
+Only a **different** file already holding the name counts. A key already in the index is our own
+earlier copy of the same file, reported as *Already saved*, so a repeat backup never asks.
+
+The run resumes from exactly where it stopped — the backend keeps the selection, the position and
+the decisions already made, so nothing ahead of the pause is re-downloaded. The queue shows the
+waiting file in its own band, and *Cancel* skips that one file and lets the rest of the run
+continue. Answering with an unknown value is rejected and the question stays open, and stopping the
+run while it is waiting ends it cleanly rather than leaving a dialog with no way out.
+
 ## Settings
 
 - The settings list starts directly below the top bar. It is a **two-column grid**

@@ -15,7 +15,7 @@ import webview
 from playwright._impl._errors import TargetClosedError
 
 from .browser import Browser, chromium_ready
-from .core import APP_SUPPORT, BrowserAuthError, DOWNLOADS, SUPPORT, ArchiveIndex, EditorTypeCache, FigmaClient, FigmaError, PreferencesStore, TokenStore, TreeArchiveIndex, merge_teams, read_json, team_id_from_input, write_json
+from .core import APP_SUPPORT, BrowserAuthError, DOWNLOADS, SUPPORT, ArchiveIndex, EditorTypeCache, FigmaClient, FigmaError, FileConflict, PreferencesStore, TokenStore, TreeArchiveIndex, merge_teams, read_json, team_id_from_input, write_json
 
 # Editor types this app can export via the web editor's "Save local copy".
 SUPPORTED_EDITOR_TYPES = ("figma", "figjam", "slides")
@@ -68,13 +68,16 @@ class Bridge:
         self.lock = threading.Lock()
         self.state = {"running": False, "phase": "idle", "items": [], "current": 0, "total": 0,
                       "saved": 0, "existing": 0, "skipped": 0, "failed": 0,
-                      "message": "", "warning": "", "finished": False}
+                      "message": "", "warning": "", "finished": False, "conflict": None}
         # Kept outside self.state: start_download replaces that dict wholesale.
         system = self.browser.system_browsers()
         self.browser_state = {"phase": "ready" if system or chromium_ready() else "missing",
                               "message": "", "source": system[0][0] if system else "chromium"}
         self.maximized = False
         self.stop_requested = False
+        # A run paused on a file conflict resumes from here: where it stopped and
+        # what the user already decided for other files.
+        self._run: dict | None = None
 
     @staticmethod
     def _make_client(token: str) -> FigmaClient:
@@ -103,8 +106,13 @@ class Bridge:
             return {"ok": False}
         window = webview.windows[0]
         WM_NCLBUTTONDOWN = 0xA1
-        ctypes.windll.user32.ReleaseCapture()
-        ctypes.windll.user32.SendMessageW(int(window.native.Handle), WM_NCLBUTTONDOWN, edge, 0)
+        user32 = ctypes.windll.user32
+        # pythonnet hands us a System.IntPtr, which deliberately does not convert
+        # to a Python int — pywebview itself always calls ToInt32(). Without this
+        # the frameless window cannot be resized at all on Windows.
+        hwnd = int(window.native.Handle.ToInt64())
+        user32.ReleaseCapture()
+        user32.SendMessageW(hwnd, WM_NCLBUTTONDOWN, edge, 0)
         return {"ok": True}
 
     def open_external(self, url: str) -> dict:
@@ -147,7 +155,7 @@ class Bridge:
         return {"has_token": bool(self.token), "downloads": str(DOWNLOADS),
                 "teams": read_json(SUPPORT / "teams.json", []),
                 "preferences": self.preferences_store.load(),
-                "browser": self._browser_status(), "version": "0.3.0"}
+                "browser": self._browser_status(), "version": "1.0.0"}
 
     def install_browser(self) -> dict:
         with self.lock:
@@ -336,8 +344,10 @@ class Bridge:
                 raise FigmaError("Another download is already running")
             self.state = {"running": True, "phase": "scanning", "items": [], "current": 0, "total": 0,
                           "saved": 0, "existing": 0, "skipped": 0, "failed": 0,
-                          "message": "Collecting files…", "warning": "", "finished": False}
+                          "message": "Collecting files…", "warning": "", "finished": False,
+                          "conflict": None}
             self.stop_requested = False
+            self._run = {"selection": selection, "position": 0, "decisions": {}}
         self.executor.submit(self._run_download, selection)
         return {"started": True}
 
@@ -345,6 +355,19 @@ class Bridge:
         with self.lock:
             self.stop_requested = True
             self.state["message"] = "Stopping after the current file…"
+            # A run paused on a conflict has no loop left to notice the flag, so
+            # ending it here is the only way out of that dialog.
+            if self.state.get("conflict"):
+                pending = self.state["items"] and next(
+                    (x for x in self.state["items"] if x["status"] == "conflict"), None)
+                if pending is not None:
+                    pending["status"] = "stopped"
+                    pending["detail"] = "Stopped"
+                self.state["phase"] = "stopped"
+                self.state["running"] = False
+                self.state["finished"] = True
+                self.state["conflict"] = None
+                self._run = None
         return {"stopping": True}
 
     def status(self) -> dict:
@@ -356,8 +379,15 @@ class Bridge:
         with self.lock:
             self.state.update(changes)
 
-    def _run_download(self, selection: dict) -> None:
+    def _run_download(self, selection: dict, position: int = 0, decisions: dict | None = None) -> None:
+        """Walk the selection in order.
+
+        `position` and `decisions` come from an earlier pause, so a run that
+        stopped on a file conflict resumes exactly where it left off instead of
+        restarting and re-fetching everything ahead of it.
+        """
         client = self._required()
+        decisions = decisions or {}
         try:
             client.unavailable_subfolders.clear()
             scope = selection["scope"]
@@ -367,26 +397,29 @@ class Bridge:
                          if item.get("key") == selection["file_key"]]
                 if not files:
                     raise FigmaError("The selected file was not found in this folder")
-                index = ArchiveIndex()
+                archive = ArchiveIndex()
                 destination = str(DOWNLOADS)
             else:
                 roots = client.top_folders(team["id"]) if scope == "team" else [selection["folder"]]
                 files, folder_paths = client.walk_tree(roots)
-                index = TreeArchiveIndex(team)
-                index.prepare_folders(folder_paths)
-                destination = str(index.folder_path([selection["folder"]])) if scope == "folder" else str(index.root)
-            items = [{"key": file["key"], "name": file.get("name") or "Untitled", "status": "queued", "detail": ""}
-                     for file in files if file.get("key")]
-            self._set(items=items, total=len(items), phase="downloading",
-                      destination=destination, message="Download queue is ready" if items else "No supported files were found")
-            for position, file in enumerate(files):
-                if not file.get("key"):
+                archive = TreeArchiveIndex(team)
+                archive.prepare_folders(folder_paths)
+                destination = str(archive.folder_path([selection["folder"]])) if scope == "folder" else str(archive.root)
+            if position == 0:
+                items = [{"key": file["key"], "name": file.get("name") or "Untitled",
+                          "status": "queued", "detail": ""}
+                         for file in files if file.get("key")]
+                self._set(items=items, total=len(items), phase="downloading", destination=destination,
+                          message="Download queue is ready" if items else "No supported files were found")
+            for index, file in enumerate(files):
+                if index < position or not file.get("key"):
                     continue
+                position = index
                 with self.lock:
                     if self.stop_requested:
                         self.state["phase"] = "stopped"
                         break
-                    self.state["current"] = position + 1
+                    self.state["current"] = index + 1
                     item = next(x for x in self.state["items"] if x["key"] == file["key"])
                     item["status"] = "checking"
                     self.state["message"] = file.get("name") or "Untitled"
@@ -399,16 +432,37 @@ class Bridge:
                             self.state["skipped"] += 1
                         continue
                     file = {**file, "editorType": kind or ""}
+                    # Ask before touching anything when a *different* file already
+                    # holds the name. An already-indexed key is our own earlier
+                    # copy, not a clash, so plan() reports nothing for it.
+                    if decisions.get(file["key"]) is None:
+                        wanted, taken = archive.plan(file)
+                        if taken is not None:
+                            with self.lock:
+                                item["status"] = "conflict"
+                                item["detail"] = ""
+                                self.state["conflict"] = {
+                                    "key": file["key"],
+                                    "name": file.get("name") or wanted.name,
+                                    "wanted": wanted.name,
+                                    "existing": taken.name,
+                                    "position": index,
+                                }
+                                self.state["phase"] = "conflict"
+                                self._run = {"selection": selection, "position": index, "decisions": decisions}
+                            return
+                    overwrite = decisions.get(file["key"]) == "overwrite"
+
                     def progress(status: str, detail: str) -> None:
                         with self.lock:
                             item["status"] = status
                             item["detail"] = detail
                     try:
-                        result = self.browser.download(file, index, progress)
+                        result = self.browser.download(file, archive, progress, overwrite=overwrite)
                     except TargetClosedError:
                         progress("retrying", "Chromium crashed; retrying with the headless browser…")
                         self.browser.recover_from_crash()
-                        result = self.browser.download(file, index, progress)
+                        result = self.browser.download(file, archive, progress, overwrite=overwrite)
                     with self.lock:
                         item["status"] = result["status"]
                         item["detail"] = result["path"]
@@ -437,9 +491,40 @@ class Bridge:
                 )
                 self.state["running"] = False
                 self.state["finished"] = True
+                self.state["conflict"] = None
+            self._run = None
             client.flush_types()
         except Exception as error:
-            self._set(running=False, finished=True, phase="error", message=str(error).splitlines()[0])
+            self._run = None
+            self._set(running=False, finished=True, phase="error",
+                      message=str(error).splitlines()[0], conflict=None)
+
+    def resolve_conflict(self, choice: str) -> dict:
+        """Answer a paused run: overwrite the existing file, keep both, or skip it."""
+        run = self._run
+        with self.lock:
+            pending = self.state.get("conflict")
+            if not run or not pending:
+                raise FigmaError("No file is waiting for a decision")
+            if choice not in ("overwrite", "rename", "cancel"):
+                raise FigmaError("Choose overwrite, rename, or cancel")
+            decisions = dict(run["decisions"])
+            decisions[pending["key"]] = choice
+            self.state["conflict"] = None
+            self.state["phase"] = "downloading"
+            self.state["running"] = True
+            self.state["finished"] = False
+            self._run = {"selection": run["selection"], "position": run["position"], "decisions": decisions}
+            resume = run["position"] + (1 if choice == "cancel" else 0)
+            if choice == "cancel":
+                item = next((x for x in self.state["items"] if x["key"] == pending["key"]), None)
+                if item is not None:
+                    item["status"] = "skipped"
+                    # A code, not prose: the UI owns the wording.
+                    item["detail"] = "conflict"
+                self.state["skipped"] += 1
+        self.executor.submit(self._run_download, run["selection"], resume, decisions)
+        return {"resolved": choice}
 
     def open_downloads(self) -> dict:
         if sys.platform == "win32":

@@ -38,6 +38,7 @@ class in `figma_backup/app.py`), and the Bridge runs all browser work on a singl
 | `status()` | Snapshot `{running, phase, items, total, saved, existing, skipped, failed, message, destination, finished, browser}` |
 | `open_destination()` / `open_downloads()` | Reveal folders in Finder |
 | `open_path(path)` | Reveal one downloaded file in Finder/Explorer (or open its folder); must live under Downloads |
+| `begin_resize(edge)` | Hand a frameless window's edge strip to the native sizing loop (Windows only). The Win32 handle comes from pythonnet as a `System.IntPtr`, which deliberately does **not** convert to a Python int — pywebview always calls `.ToInt32()`, so this must too, or the frameless window cannot be resized at all |
 
 `start_download` supports a **single scope per call**. Multi-select backups are implemented in the
 UI as a sequential queue of per-item `start_download` calls (see “Backup queue” below).
@@ -115,6 +116,12 @@ UI as a sequential queue of per-item `start_download` calls (see “Backup queue
 | `~/Library/Application Support/Figma Fig Downloader/` | Legacy `teams.json`, `downloads.json` index, bundled Chromium profile, and separate Chrome/Edge profiles |
 | `~/Downloads/Fig Backup/<Team>/…` | Tree backups (folder structure preserved, stable collision-safe names) |
 | `~/Downloads/*.fig` | Single-file downloads (also `.jam` / `.deck` for FigJam and Slides) |
+
+`plan()` on both indexes reports the name a file would naturally take and whatever already
+occupies it, without writing anything; that is how a clash is spotted before a single byte moves.
+`_run_download` pauses on one, and `resolve_conflict()` records the answer and re-enters the loop at
+the stored position — the run context (`selection`, `position`, `decisions`) lives on the Bridge,
+so a paused run resumes instead of restarting.
 
 Both archive indexes are keyed by file key and remember the path they chose, so a repeat backup
 skips the browser entirely. That memory outlives an editor-format change, so `target()` repairs an

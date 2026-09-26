@@ -17,7 +17,7 @@ class DownloadValidationTests(unittest.TestCase):
         ):
             with self.subTest(editor_type=editor_type), tempfile.TemporaryDirectory() as directory:
                 destination = Path(directory) / f'Board{extension}'
-                index = SimpleNamespace(target=lambda _file: (destination, False))
+                index = SimpleNamespace(target=lambda _file, overwrite=False: (destination, False))
                 download = SimpleNamespace(suggested_filename=f'Board{wrong_extension}', save_as=MagicMock())
                 page = MagicMock()
                 page.url = 'https://www.figma.com/file/key'
@@ -44,7 +44,7 @@ class DownloadValidationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             destination = Path(directory) / 'Board.fig'
             destination.write_bytes(b'PK' + b'\x00' * 2048)
-            index = SimpleNamespace(target=lambda _file: (destination, False))
+            index = SimpleNamespace(target=lambda _file, overwrite=False: (destination, False))
             browser = Browser(Path(directory))
             file = {'key': 'key', 'name': 'Board', 'editorType': 'figjam'}
 
@@ -57,7 +57,7 @@ class DownloadValidationTests(unittest.TestCase):
                 with self.subTest(editor_type=editor_type, payload=payload[:1]), tempfile.TemporaryDirectory() as directory:
                     destination = Path(directory) / f'Board{extension}'
                     destination.write_bytes(payload + b' ' * 2048)
-                    index = SimpleNamespace(target=lambda _file: (destination, False))
+                    index = SimpleNamespace(target=lambda _file, overwrite=False: (destination, False))
                     browser = Browser(Path(directory))
                     file = {'key': 'key', 'name': 'Board', 'editorType': editor_type}
 
@@ -72,7 +72,7 @@ class DownloadValidationTests(unittest.TestCase):
             for payload in (b'<html>Access denied</html>', b'{"error":"Access denied"}'):
                 with self.subTest(editor_type=editor_type, payload=payload[:1]), tempfile.TemporaryDirectory() as directory:
                     destination = Path(directory) / f'Board{extension}'
-                    index = SimpleNamespace(target=lambda _file: (destination, False))
+                    index = SimpleNamespace(target=lambda _file, overwrite=False: (destination, False))
                     download = SimpleNamespace(
                         suggested_filename=destination.name,
                         save_as=lambda path: Path(path).write_bytes(payload + b' ' * 2048),

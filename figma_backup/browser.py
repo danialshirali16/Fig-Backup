@@ -793,9 +793,9 @@ class Browser:
             save = page.get_by_text("Save local copy", exact=True).last
         save.click(timeout=10000)
 
-    def download(self, file: dict, index: ArchiveIndex, progress) -> dict:
+    def download(self, file: dict, index: ArchiveIndex, progress, overwrite: bool = False) -> dict:
         expected_extension = native_extension(file.get("editorType"))
-        destination, migrated = index.target(file)
+        destination, migrated = index.target(file, overwrite=overwrite)
         if destination.suffix.lower() != expected_extension:
             raise FigmaError(f"The backup path has an unexpected file type: {destination.name}")
         if destination.exists():
