@@ -13,6 +13,7 @@ app-icon.icns
 app-icon.iconset/
 .backup-pre-shadcn/
 .ui-review/
-layout-proposals.html
+ui-*.html
+layout-*.html
 .zcodeignore
 .zcode/
