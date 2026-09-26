@@ -2,6 +2,15 @@ import { downloadFailureDescription } from './download-errors.js'
 
 export const DONE_STATES = ['saved', 'exists', 'renamed']
 
+/* What a finished run actually did, so a row caption never claims work that did
+   not happen: 'exists' when every file was already on disk, 'renamed' when only
+   a legacy name was migrated, 'saved' when at least one new copy was written. */
+export function runOutcome(doneFiles) {
+  if (!doneFiles.length) return 'none'
+  if (doneFiles.some(file => file.status === 'saved')) return 'saved'
+  return doneFiles.every(file => file.status === 'renamed') ? 'renamed' : 'exists'
+}
+
 export function summarizeDownloadRun(status, queueName, translate) {
   const files = Array.isArray(status?.items) ? status.items : []
   const doneFiles = files.filter(file => DONE_STATES.includes(file.status))
@@ -23,6 +32,7 @@ export function summarizeDownloadRun(status, queueName, translate) {
     bytes: doneFiles.reduce((sum, file) => sum + (file.size || 0), 0),
     filesDone: doneFiles.length,
     filesTotal,
+    outcome: runOutcome(doneFiles),
   }
 }
 

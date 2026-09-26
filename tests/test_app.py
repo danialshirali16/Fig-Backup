@@ -31,6 +31,12 @@ class Client:
     def files(self, folder_id):
         return self.all_files({'id': folder_id})
 
+    def apply_cached_types(self, files):
+        return None
+
+    def flush_types(self):
+        return None
+
     def editor_type(self, file):
         return file['editorType']
 
@@ -56,6 +62,12 @@ class EditorTypeClient:
 
     def files(self, folder_id):
         return [{'key': f'k{index}', 'name': f'F{index}'} for index in range(12)]
+
+    def apply_cached_types(self, files):
+        return None
+
+    def flush_types(self):
+        return None
 
     def editor_type(self, file):
         with self.lock:
@@ -165,20 +177,42 @@ class BridgeTests(unittest.TestCase):
         self.assertFalse(state['running'])
         self.assertTrue(state['finished'])
 
-    def test_files_listing_enriches_editor_types(self):
+    def test_files_listing_does_not_block_on_editor_types(self):
+        """The listing must come back before any per-file /meta call is made."""
         bridge = self.make_bridge(Browser())
         client = EditorTypeClient()
         bridge.client = client
         result = bridge.files('44')
-        self.assertEqual([file.get('editorType') for file in result['files']], ['figjam'] * 12)
+        self.assertEqual(len(result['files']), 12)
+        self.assertEqual(client.calls, 0, 'the listing must not spend API calls on icons')
+        self.assertTrue(all('editorType' not in file for file in result['files']))
+
+    def test_file_types_resolves_every_requested_key(self):
+        bridge = self.make_bridge(Browser())
+        client = EditorTypeClient()
+        bridge.client = client
+        keys = [f'k{index}' for index in range(12)]
+        types = bridge.file_types(keys)
+        self.assertEqual(sorted(types), sorted(keys), 'every requested key gets an answer')
+        self.assertEqual(set(types.values()), {'figjam'})
         self.assertEqual(client.calls, 12)
 
-    def test_files_listing_survives_rate_limit(self):
+    def test_file_types_deduplicates_and_ignores_junk(self):
+        bridge = self.make_bridge(Browser())
+        client = EditorTypeClient()
+        bridge.client = client
+        types = bridge.file_types(['a', 'a', '', None, 'b'])
+        self.assertEqual(sorted(types), ['a', 'b'])
+        self.assertEqual(client.calls, 2)
+
+    def test_file_types_survives_rate_limit(self):
+        """A 429 must still answer every key, or rows keep showing a skeleton."""
         bridge = self.make_bridge(Browser())
         bridge.client = EditorTypeClient(error=FigmaError('Figma API HTTP 429: slow down', 429))
-        result = bridge.files('44')
-        self.assertEqual(len(result['files']), 12)
-        self.assertTrue(all('editorType' not in file for file in result['files']))
+        keys = [f'k{index}' for index in range(12)]
+        types = bridge.file_types(keys)
+        self.assertEqual(sorted(types), sorted(keys))
+        self.assertTrue(all(value is None for value in types.values()))
 
     def test_browser_auth_error_stops_queue_with_attention(self):
         class AuthRequiredBrowser(Browser):
@@ -453,6 +487,7 @@ class RequiredSetupTests(unittest.TestCase):
             bridge.preferences_store.save({'onboarding_complete': True, 'setup_version': 2})
             bridge.token_store = type('Store', (), {'save': lambda self, token: None})()
             bridge.token = 'old-token'
+            bridge.client = None
             bridge.browser_verified = True
             bridge.token_verified = True
             client = type('Client', (), {'me': lambda self: {'handle': 'Tester'}})()

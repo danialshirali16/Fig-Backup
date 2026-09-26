@@ -15,6 +15,7 @@ import { Card } from '@/components/ui/card'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Toaster } from '@/components/ui/sonner'
 import { translate, LANGUAGES, RTL_LANGUAGES } from './i18n'
+import { describeApiError } from './api-errors'
 import { DONE_STATES, queueProgressPercent, summarizeDownloadRun } from './download-queue'
 import { flyToQueue, cancelAllFlights } from './fly-to-queue'
 import iconFileDesign from './assets/figma-file-design.png'
@@ -35,6 +36,9 @@ const FILE_ICONS = { figma: iconFileDesign, slides: iconFileSlides, figjam: icon
    wording is the Figma design's, verbatim. */
 const STEP_KEY = { checking: 'stepOpening', opening: 'stepOpening', preparing: 'stepDownloadingAssets', saving: 'stepBundling', retrying: 'stepRetrying' }
 const LIVE_FILE_STATES = [...Object.keys(STEP_KEY)]
+/* Runs that ended badly get their own band: under "In Progress" a failed row
+   reads as "still working on it". */
+const ATTENTION_STATES = ['failed', 'stopped']
 
 const fmtBytes = (bytes) => {
   if (!bytes || bytes <= 0) return ''
@@ -45,8 +49,21 @@ const fmtBytes = (bytes) => {
   return `${value >= 100 || unit === 0 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`
 }
 
-function FileIcon({ editorType, className = 'size-8 shrink-0', ...rest }) {
+/* Official Figma file-type icons. `pending` means the type has not arrived yet
+   (the listing does not carry it), so the row shows a placeholder rather than
+   claiming every file is a Design file. */
+function FileIcon({ editorType, pending = false, className = 'size-8 shrink-0', ...rest }) {
+  if (pending) {
+    // `rest` carries data-row-tile, which the fly-to-queue animation looks for.
+    return <span aria-hidden="true" className={'block rounded-lg bg-muted motion-safe:animate-pulse ' + className} {...rest} />
+  }
   return <img src={FILE_ICONS[editorType] ?? iconFileDesign} alt="" aria-hidden="true" draggable="false" className={className} {...rest} />
+}
+
+/* Module scope on purpose: a component defined inside App gets a new identity on
+   every render, so React unmounts and remounts its subtree each time. */
+function Spinner() {
+  return <Loader2 className="size-4 motion-safe:animate-spin" aria-hidden="true" />
 }
 
 function bridgeReady() {
@@ -203,6 +220,7 @@ function App() {
   const [loginOpen, setLoginOpen] = useState(false)
   const [busy, setBusy] = useState('')
   const [error, setError] = useState('')
+  const [retryAction, setRetryAction] = useState(null)
   const [progress, setProgress] = useState({ running: false, phase: 'idle', items: [], total: 0, saved: 0, existing: 0, skipped: 0, failed: 0, message: '', destination: '', finished: false })
   const [selectMode, setSelectMode] = useState(false)
   const [selection, setSelection] = useState({}) // teamId -> { folders: [], files: [] }
@@ -217,6 +235,7 @@ function App() {
   const selectBtnRef = useRef(null)
   const runIdRef = useRef(0)
   const discoverRunRef = useRef(0)
+  const browseRunRef = useRef(0)
   const browserWatchRef = useRef(false)
   const setupStartRef = useRef(0)
   const prevSetupPhaseRef = useRef('ready')
@@ -272,28 +291,31 @@ function App() {
     root.classList.toggle('dark', appearance === 'dark')
   }, [language, appearance])
 
-  useEffect(() => {
-    bridgeReady().then(async bridge => {
-      setApi(bridge)
-      try {
-        const initial = await bridge.bootstrap()
-        setHasToken(initial.has_token)
-        setPreferences(initial.preferences)
-        setTeams(initial.teams || [])
-        if (initial.browser) setBrowserSetup(initial.browser)
-        if (initial.browser && initial.browser.phase !== 'ready') watchBrowser(bridge)
-        if (initial.preferences.onboarding_complete && initial.preferences.setup_version === 2 && initial.has_token) {
-          setView('teams')
-          await discover(bridge)
-        } else {
-          setView('wizard')
-          setWizardStep('browser')
-        }
-        setReady(true)
-      } catch (err) {
-        setError(firstLine(err))
-        setReady(true)
+  /* Extracted so a failed bootstrap is retryable: without it the app rendered
+     an error with no way forward except relaunching. */
+  async function runBootstrap(bridge) {
+    await call('bootstrap', async () => {
+      const initial = await bridge.bootstrap()
+      setHasToken(initial.has_token)
+      setPreferences(initial.preferences)
+      setTeams(initial.teams || [])
+      if (initial.browser) setBrowserSetup(initial.browser)
+      if (initial.browser && initial.browser.phase !== 'ready') watchBrowser(bridge)
+      if (initial.preferences.onboarding_complete && initial.preferences.setup_version === 2 && initial.has_token) {
+        setView('teams')
+        await discover(bridge)
+      } else {
+        setView('wizard')
+        setWizardStep('browser')
       }
+    })
+    setReady(true)
+  }
+
+  useEffect(() => {
+    bridgeReady().then(bridge => {
+      setApi(bridge)
+      void runBootstrap(bridge)
     })
   }, [])
 
@@ -317,17 +339,37 @@ function App() {
     return () => window.clearInterval(timer)
   }, [browserSetup.phase])
 
+  /* `action` must be self-contained: it does the work AND applies the result.
+     That is what makes Retry correct — replaying it repeats the whole operation
+     instead of re-fetching data nobody reads. */
   async function call(label, action) {
-    setBusy(label); setError(''); toast.dismiss('app-notice')
-    try { return await action() }
-    catch (err) { setError(firstLine(err)); return null }
+    setBusy(label); setError(''); setRetryAction(null); toast.dismiss('app-notice')
+    try { await action() }
+    catch (err) {
+      setError(firstLine(err))
+      // Wrapped in an arrow: a bare value would be treated as a state updater.
+      setRetryAction(() => ({ label, action }))
+    }
     finally { setBusy('') }
   }
 
+  function retryLast() {
+    const entry = retryAction
+    if (entry) void call(entry.label, entry.action)
+  }
+
+  function dismissError() {
+    setError('')
+    setRetryAction(null)
+  }
+
   async function savePrefs(changes) {
-    const result = await call('preferences', () => api.save_preferences(changes))
-    if (result) setPreferences(result)
-    return result
+    let saved = null
+    await call('preferences', async () => {
+      saved = await api.save_preferences(changes)
+      setPreferences(saved)
+    })
+    return saved
   }
 
   async function discover(bridge = api) {
@@ -392,8 +434,10 @@ function App() {
   }
 
   async function verifyBrowserContinue() {
-    const result = await callWithBrowserStatus('browser-check', () => api.verify_browser())
-    if (result?.ready) setWizardStep('token')
+    await callWithBrowserStatus('browser-check', async () => {
+      const result = await api.verify_browser()
+      if (result?.ready) setWizardStep('token')
+    })
   }
 
   async function saveTokenContinue(event) {
@@ -404,50 +448,62 @@ function App() {
       return
     }
     setTokenError('')
-    const result = await call('token', () => token.trim() ? api.save_token(token) : api.verify_token())
-    if (!result) return
-    setHasToken(true)
-    setToken('')
-    if (view === 'settings') {
-      if (result.setup_required) {
-        void openWizard('browser')
+    await call('token', async () => {
+      const result = await (token.trim() ? api.save_token(token) : api.verify_token())
+      setHasToken(true)
+      setToken('')
+      if (view === 'settings') {
+        if (result.setup_required) {
+          void openWizard('browser')
+          return
+        }
+        toast.success(t('tokenSavedNotice'), { id: 'app-notice' })
+        if (settingsReturn === 'wizard') setWizardStep('signin')
         return
       }
-      toast.success(t('tokenSavedNotice'), { id: 'app-notice' })
-      if (settingsReturn === 'wizard') setWizardStep('signin')
-      return
-    }
-    setVerifiedName(result.name || 'Figma')
-    setWizardStep('signin')
+      setVerifiedName(result.name || 'Figma')
+      setWizardStep('signin')
+    })
   }
 
   async function completeSetup() {
-    const result = await callWithBrowserStatus('sign-in-check', () => api.complete_setup())
-    setLoginOpen(false)
-    if (!result) return
-    if (!result.completed) {
-      setError(t('signinNotVerified'))
-      return
-    }
-    setPreferences(result.preferences)
-    setView('teams')
-    await discover()
+    await callWithBrowserStatus('sign-in-check', async () => {
+      const result = await api.complete_setup()
+      setLoginOpen(false)
+      if (!result.completed) {
+        setError(t('signinNotVerified'))
+        return
+      }
+      setPreferences(result.preferences)
+      setView('teams')
+      await discover()
+    })
   }
 
   async function signInNow() {
-    const result = await callWithBrowserStatus('sign-in', () => api.open_sign_in())
-    if (result) setLoginOpen(true)
+    await callWithBrowserStatus('sign-in', async () => {
+      await api.open_sign_in()
+      setLoginOpen(true)
+    })
   }
 
   async function openWizard(step) {
     if (step === 'browser' && view !== 'wizard') {
-      const reset = await call('setup-begin', () => api.begin_setup())
-      if (!reset) return
-      setPreferences(reset.preferences)
-      setVerifiedName('')
+      let opened = false
+      await call('setup-begin', async () => {
+        const reset = await api.begin_setup()
+        setPreferences(reset.preferences)
+        setVerifiedName('')
+        opened = true
+      })
+      if (!opened) return
     }
     if (loginOpen && step !== 'signin') {
-      const closed = await call('sign-in-close', () => api.close_sign_in())
+      let closed = false
+      await call('sign-in-close', async () => {
+        await api.close_sign_in()
+        closed = true
+      })
       if (!closed) return
       setLoginOpen(false)
     }
@@ -457,28 +513,42 @@ function App() {
 
   async function chooseTeam(value) {
     setTeam(value); setView('browse'); setFolder(null); setTrail([]); setFolders([]); setFiles([]); setSelectMode(false)
-    const result = await call('folders', () => api.folders(value.id))
-    if (!result) return
-    setFolders(result.folders || [])
-    if (result.legacy) toast.warning(t('legacyNotice'), { id: 'app-notice', duration: Infinity })
+    await call('folders', async () => {
+      const result = await api.folders(value.id)
+      setFolders(result.folders || [])
+      if (result.legacy) toast.warning(t('legacyNotice'), { id: 'app-notice', duration: Infinity })
+    })
   }
 
   async function browseFolder(value, path = [...trail, value]) {
+    const runId = ++browseRunRef.current
     setFolder(value); setTrail(path); setFolders([]); setFiles([])
-    const result = await call('browse', async () => {
-      const children = await api.subfolders(value.id)
-      const fileResult = await api.files(value.id)
-      return { children, fileResult }
+    await call('browse', async () => {
+      // Independent listings — there is no reason to wait for one to start the other.
+      const [children, fileResult] = await Promise.all([api.subfolders(value.id), api.files(value.id)])
+      if (runId !== browseRunRef.current) return
+      const listing = fileResult.files || []
+      setFolders(children.folders || [])
+      setFiles(listing)
+      if (children.unavailable || fileResult.unavailable) toast.warning(t('folderRestricted'), { id: 'app-notice', duration: Infinity })
+      loadFileTypes(listing, runId)
     })
-    if (!result) return
-    setFolders(result.children.folders || [])
-    setFiles(result.fileResult.files || [])
-    if (result.children.unavailable || result.fileResult.unavailable) toast.warning(t('folderRestricted'), { id: 'app-notice', duration: Infinity })
   }
 
-  async function backTo(index) {
-    if (index < 0) { await chooseTeam(team); return }
-    await browseFolder(trail[index], trail.slice(0, index + 1))
+  /* The file-type icons cost one API call per file. The names are already on
+     screen by now, so this fills the icons in behind them; unknown types come
+     back as null and fall back to the Design glyph. */
+  async function loadFileTypes(listing, runId) {
+    const missing = listing.filter(file => file.key && file.editorType === undefined)
+    if (!missing.length) return
+    let types
+    try {
+      types = await api.file_types(missing.map(file => file.key))
+    } catch {
+      return
+    }
+    if (runId !== browseRunRef.current || !types) return
+    setFiles(current => current.map(file => (file.key in types ? { ...file, editorType: types[file.key] } : file)))
   }
 
   /* ---------- hierarchical per-team selection ---------- */
@@ -506,6 +576,11 @@ function App() {
   const visibleAllSelected = (folders.length + files.length > 0) && folders.every(f => folderSelected(f.id)) && files.every(f => fileSelected(f.key))
   const visibleSomeSelected = folders.some(f => folderSelected(f.id)) || files.some(f => fileSelected(f.key))
   const allState = visibleAllSelected ? 'on' : visibleSomeSelected ? 'half' : 'off'
+  /* The selection store is per team and survives navigation, so selCount can
+     exceed what is on screen. Count the visible slice for the position readout
+     and report the rest separately instead of mixing the two. */
+  const visibleSelected = folders.filter(f => folderSelected(f.id)).length + files.filter(f => fileSelected(f.key)).length
+  const selectedElsewhere = selCount - visibleSelected
   function onSelectAll() {
     if (visibleAllSelected) {
       updateSelection(cur => ({
@@ -575,7 +650,10 @@ function App() {
           const s = await waitForRunEnd(runId)
           if (s.cancelled) break
           if (s.warning) toast.warning(backendWarning(s.warning), { id: 'app-notice', duration: Infinity })
-          if (s.phase === 'attention' || isSigninIssue(s.message)) {
+          // Only the backend's own signal may send the user back to the wizard.
+          // s.message after a finished run is the last file's NAME, so a file
+          // called "Sign-in redesign" would otherwise wipe a completed setup.
+          if (s.phase === 'attention') {
             updateQueueItem(item.id, { status: 'failed', detail: t('interrupted') })
             routeToSignin()
             break
@@ -694,24 +772,30 @@ function App() {
   const scanning = progress.running && progress.phase === 'scanning'
   const scanSeconds = scanning && scanStartRef.current ? Math.max(0, Math.floor((Date.now() - scanStartRef.current) / 1000)) : 0
   const scanLabel = scanSeconds ? `${Math.floor(scanSeconds / 60)}:${String(scanSeconds % 60).padStart(2, '0')}` : ''
-  const runningRows = queue.filter(item => item.status !== 'done')
+  const runningRows = queue.filter(item => item.status === 'queued' || item.status === 'running')
+  const attentionRows = queue.filter(item => ATTENTION_STATES.includes(item.status))
   const completedRows = queue.filter(item => item.status === 'done')
   const clearable = completedRows.length > 0
 
-  const Spinner = () => <Loader2 className="size-4 motion-safe:animate-spin" aria-hidden="true" />
+  /* Every ancestor is a real target, so the user can see where they are and jump
+     up a level instead of clicking Back through the whole tree. */
+  const breadcrumbs = team
+    ? [
+        { key: 'teams', label: t('teamsTitle'), go: () => setView('teams') },
+        { key: 'team', label: team.name, go: () => chooseTeam(team) },
+        ...trail.map((ancestor, index) => ({
+          key: ancestor.id,
+          label: ancestor.name,
+          go: () => browseFolder(ancestor, trail.slice(0, index + 1)),
+        })),
+      ]
+    : []
+  const lastCrumb = breadcrumbs.length - 1
 
   function backendWarning(w) {
     const match = /subfolders for (\d+) folder/.exec(String(w || ''))
     return match ? t('subfolderWarning', { count: match[1] }) : w
   }
-  function errorHelp(message) {
-    if (/token|HTTP 401/i.test(message)) return t('tokenRecovery')
-    if (/HTTP 403|permission|access denied/i.test(message)) return t('accessRecovery')
-    if (/HTTP 429/i.test(message)) return t('rateRecovery')
-    if (/valid team|cannot be empty|Choose a/i.test(message)) return ''
-    return t('errorPrefix')
-  }
-
   /* ---------- wizard ---------- */
   const wizard = view === 'wizard' && (
     <Card className="mx-auto w-full max-w-[640px] px-5 py-4">
@@ -852,15 +936,22 @@ function App() {
         const count = item.kind !== 'file' && progress.total > 0
           ? <> · {t(progress.total === 1 ? 'progressCountOne' : 'progressCount', { done: doneCount, total: progress.total })}</>
           : null
-        return <span>{t(STEP_KEY[liveFile.status])}{count}</span>
+        // Announce the stage only: the per-file counter would fire on every file.
+        return <span><span aria-live="polite">{t(STEP_KEY[liveFile.status])}</span>{count}</span>
       }
       return <span>{setupPending ? t('setupWaiting') : t('running')}</span>
     }
     if (item.status === 'stopped') return <span>{item.detail || t('statusStopped')}</span>
     if (item.status === 'failed') return <span className="text-destructive">{item.detail || t('statusFailed')}</span>
     if (item.status === 'partial' || item.status === 'skipped') return <span>{item.detail || t('skipped')}</span>
+    /* Say what the run really did. A file that was already on disk reported no
+       size, so claiming "Saved" (or a byte count) for it would be a lie. */
+    if (item.outcome === 'renamed') return <span>{t('statusRenamed')}</span>
+    if (item.outcome === 'exists') {
+      return <span>{item.kind === 'file' ? t('statusExists') : `${t('statusExists')} · ${countCopy('filesCount', item.filesDone || 0)}`}</span>
+    }
     if (item.kind === 'file') return <span>{fmtBytes(item.bytes) || t('statusSaved')}</span>
-    return <span>{countCopy('filesCount', item.filesDone || 0)}</span>
+    return <span>{[countCopy('filesCount', item.filesDone || 0), fmtBytes(item.bytes)].filter(Boolean).join(' · ')}</span>
   }
   const rowActions = (item) => {
     if (item.status === 'running') {
@@ -963,6 +1054,15 @@ function App() {
             <div className="py-1">{runningRows.map(downloadRow)}</div>
           </section>
         )}
+        {attentionRows.length > 0 && (
+          <section>
+            <div className="flex items-center justify-between border-y border-destructive/30 bg-destructive/10 px-4 py-1.5">
+              <h3 className="text-xs font-medium text-destructive">{t('sectionNeedsAttention')}</h3>
+              <span aria-hidden="true" className="text-xs tabular-nums text-destructive">{attentionRows.length}</span>
+            </div>
+            <div className="py-1">{attentionRows.map(downloadRow)}</div>
+          </section>
+        )}
         {completedRows.length > 0 && (
           <section>
             <div className="flex items-center justify-between border-y border-border bg-muted px-4 py-1.5">
@@ -1026,7 +1126,7 @@ function App() {
                   </Button>
                 </PopoverPrimitive.Trigger>
                 <PopoverPrimitive.Portal>
-                  <PopoverPrimitive.Content id="download-manager" aria-label={t('downloadManagerTitle')} side="bottom" align="end" sideOffset={8} collisionPadding={8} onOpenAutoFocus={event => event.preventDefault()} className="z-50 flex max-h-[min(800px,var(--radix-popover-content-available-height))] w-[min(375px,calc(100vw-24px))] flex-col overflow-hidden rounded-xl border bg-popover text-popover-foreground shadow-xl outline-none">
+                  <PopoverPrimitive.Content id="download-manager" aria-label={t('downloadManagerTitle')} side="bottom" align="end" sideOffset={8} collisionPadding={8} onOpenAutoFocus={event => event.preventDefault()} className="z-50 flex min-h-[min(400px,var(--radix-popover-content-available-height))] max-h-[min(800px,var(--radix-popover-content-available-height))] w-[min(375px,calc(100vw-24px))] flex-col overflow-hidden rounded-xl border bg-popover text-popover-foreground shadow-xl outline-none">
                     {downloadManager}
                   </PopoverPrimitive.Content>
                 </PopoverPrimitive.Portal>
@@ -1042,25 +1142,48 @@ function App() {
       </header>
 
       <main id="main" className={'mx-auto w-full max-w-[680px] flex-1 ' + (view === 'wizard' ? 'px-4 pt-5 pb-6' : 'px-2 pt-4 pb-8')}>
-        {error && (
-          <div role="alert" className="mb-4 flex items-start gap-2.5 rounded-lg border border-[var(--figma-color-border-danger)] bg-[var(--figma-color-bg-danger-tertiary)] px-3.5 py-2.5 text-sm text-destructive">
-            <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-            <span className="min-w-0 flex-1 break-words">{error} {errorHelp(error)}</span>
-            <button onClick={() => setError('')} aria-label={t('close')} className="grid size-8 shrink-0 place-items-center rounded-md hover:bg-destructive/15 focus-visible:outline-2 focus-visible:outline-ring"><X className="size-3.5" /></button>
-          </div>
-        )}
+        {error && (() => {
+          const { title, hint, detail } = describeApiError(error, t)
+          return (
+            <div role="alert" className="mb-4 flex items-start gap-2.5 rounded-lg border border-[var(--figma-color-border-danger)] bg-[var(--figma-color-bg-danger-tertiary)] px-3.5 py-2.5 text-sm text-destructive">
+              <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+              <span className="min-w-0 flex-1">
+                <span className="block break-words font-semibold">{title}</span>
+                {hint && <span className="mt-0.5 block text-xs leading-relaxed text-destructive/90">{hint}</span>}
+                {detail && (
+                  <details className="mt-1.5">
+                    <summary className="cursor-pointer text-xs font-medium text-destructive/80 hover:text-destructive">{t('setupDetails')}</summary>
+                    <pre dir="ltr" className="mt-1.5 max-h-24 overflow-auto whitespace-pre-wrap break-all rounded-md bg-background/60 p-2 font-mono text-[11px] leading-snug">{detail}</pre>
+                  </details>
+                )}
+              </span>
+              {retryAction && (
+                <Button variant="outline" size="sm" className="shrink-0 self-center" onClick={retryLast} disabled={!!busy}>
+                  {busy ? <Spinner /> : <RefreshCw className="size-3.5" aria-hidden="true" />} {t('retry')}
+                </Button>
+              )}
+              <button onClick={dismissError} aria-label={t('close')} className="grid size-8 shrink-0 place-items-center self-center rounded-md hover:bg-destructive/15 focus-visible:outline-2 focus-visible:outline-ring"><X className="size-3.5" /></button>
+            </div>
+          )
+        })()}
         {!ready ? (
           <div role="status" className="flex items-center justify-center gap-2.5 py-24 text-muted-foreground"><Spinner /> {t('loading')}</div>
         ) : view === 'wizard' ? wizard : <>
           {view !== 'settings' && <div className="mb-5">
             <div className="flex flex-wrap items-center justify-between gap-2.5 px-3">
               {view === 'browse' ? (
-                <div className="flex min-w-0 items-center gap-2">
-                  <Button variant="ghost" size="icon-sm" aria-label={t('back')} onClick={() => (trail.length > 1 ? backTo(trail.length - 2) : trail.length ? backTo(-1) : setView('teams'))}>
-                    <ChevronRight className="rotate-180 rtl:rotate-0" />
-                  </Button>
-                  <h1 tabIndex="-1" className="min-w-0 break-words text-lg font-semibold leading-tight tracking-tight text-balance [overflow-wrap:anywhere]"><bdi>{folder?.name || team?.name}</bdi></h1>
-                </div>
+                <nav aria-label={t('breadcrumb')} className="flex min-w-0 flex-1 flex-wrap items-center">
+                  {breadcrumbs.map((crumb, index) => (
+                    <span key={crumb.key} className="flex min-w-0 items-center">
+                      {index > 0 && <ChevronRight className="size-3.5 shrink-0 text-muted-foreground rtl:-scale-x-100" aria-hidden="true" />}
+                      {index === lastCrumb ? (
+                        <h1 className="min-w-0 truncate rounded-md px-1.5 py-0.5 text-lg font-semibold leading-tight tracking-tight text-balance"><bdi>{crumb.label}</bdi></h1>
+                      ) : (
+                        <button type="button" onClick={crumb.go} className="min-w-0 max-w-[22ch] truncate rounded-md px-1.5 py-0.5 text-lg font-medium tracking-tight text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring"><bdi>{crumb.label}</bdi></button>
+                      )}
+                    </span>
+                  ))}
+                </nav>
               ) : view === 'teams' ? (
                 <p className="text-lg font-semibold text-foreground">{t('teamsDescription')}</p>
               ) : null}
@@ -1077,14 +1200,6 @@ function App() {
                   }} disabled={!!busy}>
                     <Download className="size-3.5" /> {folder ? t('folderBackup') : t('teamBackup')}
                   </Button>
-                )}
-                {view === 'browse' && inSelect && (
-                  <>
-                    <Checkbox checked={allState === 'half' ? 'indeterminate' : allState === 'on'} onCheckedChange={onSelectAll} aria-label={t('selectAll')} />
-                    <span className="text-xs font-semibold tabular-nums text-muted-foreground" role="status">
-                      {t('ofSelected', { count: selCount, total: folders.length + files.length })}
-                    </span>
-                  </>
                 )}
                 {view === 'browse' && (
                   <Button
@@ -1215,6 +1330,23 @@ function App() {
 
           {view === 'browse' && (
             <div className="w-full">
+            {inSelect && (
+              <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border border-primary/25 bg-primary/5 px-3 py-2">
+                <Checkbox checked={allState === 'half' ? 'indeterminate' : allState === 'on'} onCheckedChange={onSelectAll} aria-label={t('selectAll')} />
+                <span className="text-xs font-semibold tabular-nums text-muted-foreground" role="status">
+                  {t('ofSelected', { count: visibleSelected, total: folders.length + files.length })}
+                </span>
+                {selectedElsewhere > 0 && (
+                  <span className="text-xs text-muted-foreground">
+                    {t('selectedElsewhere', { count: selectedElsewhere })}{' '}
+                    <button type="button" onClick={clearSelection} className="font-semibold text-brand-text hover:underline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring">{t('clearAllSelections')}</button>
+                  </span>
+                )}
+                <Button size="sm" className="ms-auto" disabled={selCount === 0} onClick={startSelectionBackup}>
+                  <Download className="size-3.5" aria-hidden="true" /> {t(selCount === 1 ? 'backUpSelectedOne' : 'backUpSelected', { count: selCount })}
+                </Button>
+              </div>
+            )}
             <div>
               {loadingBrowse && <SkeletonRows count={7} label={t('loading')} />}
               {sortedFolders.map(value => inSelect ? (
@@ -1245,12 +1377,12 @@ function App() {
                 {sortedFiles.map(value => inSelect ? (
                   <div key={value.key} className={'flex flex-wrap items-center gap-3 rounded-md px-3 py-2.5 ' + (fileSelected(value.key) ? 'bg-primary/5' : '')}>
                     <Checkbox checked={fileSelected(value.key)} onCheckedChange={() => toggleFile(value)} aria-label={t('ariaSelectItem', { name: value.name })} className="shrink-0" />
-                    <FileIcon editorType={value.editorType} />
+                    <FileIcon editorType={value.editorType} pending={value.editorType === undefined} />
                     <span className="min-w-28 flex-1 break-words text-sm font-medium leading-snug [overflow-wrap:anywhere]"><bdi>{value.name}</bdi></span>
                   </div>
                 ) : (
                   <div key={value.key} data-download-row="" className="flex flex-wrap items-center gap-3 rounded-md px-3 py-2.5 transition-colors hover:bg-accent/60">
-                    <FileIcon editorType={value.editorType} data-row-tile="" />
+                    <FileIcon editorType={value.editorType} pending={value.editorType === undefined} data-row-tile="" />
                     <span className="min-w-28 flex-1 break-words text-sm font-medium leading-snug [overflow-wrap:anywhere]"><bdi>{value.name}</bdi></span>
                     <Button variant="outline" size="sm" onClick={event => { flyToQueue(event.currentTarget.closest('[data-download-row]')?.querySelector('[data-row-tile]'), { describe: n => n === 1 ? t('queuedOne', { name: value.name }) : t('queuedMany', { count: n }) }); startDownload({ scope: 'file', folder, file_key: value.key, name: value.name, editor_type: value.editorType }) }} disabled={!!busy} aria-label={t('ariaDownloadItem', { name: value.name })}>
                       <Download className="size-3.5" aria-hidden="true" /> {t('downloadFile')}

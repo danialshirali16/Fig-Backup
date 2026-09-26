@@ -30,7 +30,8 @@ class in `figma_backup/app.py`), and the Bridge runs all browser work on a singl
 | `add_team(link, name)` | Register a team by URL/ID |
 | `folders(team_id)` | v2 Folders API with fallback to legacy v1 Projects API |
 | `subfolders(folder_id)` | Child folders; marks HTTP 451 folders unavailable |
-| `files(folder_id)` | Files in a folder (v2 or v1 depending on fallback), enriched with each file's `editorType` (cached, resolved by 4 parallel workers; a confirmed HTTP 429 drops the rest and icons fall back) for the file-type icons |
+| `files(folder_id)` | Files in a folder (v2 or v1 depending on fallback). Returns as soon as the listing arrives, with every **already known** `editorType` applied from the on-disk cache — the listing itself never carries the type |
+| `file_types(keys)` | Resolves the file-type icons for a listing that is already on screen (4 parallel workers, one `/v1/files/:key/meta` per still-unknown key, then one cache flush). Answers **every** requested key, `null` where the type could not be read, so the UI can tell "still loading" from "unknown"; a confirmed HTTP 429 drops the rest and the icons fall back |
 | `open_sign_in()` / `close_sign_in()` | Opens a visible Chrome/Edge or bundled Chromium window only on explicit sign-in; closes it before session verification |
 | `start_download(selection)` | Start one backup; scopes: `{team, scope:'team'}` / `{scope:'folder', folder}` / `{scope:'file', folder, file_key}` |
 | `stop_download()` | Ask the current run to stop after the active file |
@@ -47,8 +48,23 @@ UI as a sequential queue of per-item `start_download` calls (see “Backup queue
   remember the choice per client (`folder_api`). Subfolder listing may return HTTP 451
   (region/policy restriction); the client records the folder in `unavailable_subfolders` and the UI
   warns the backup may be incomplete.
+- **Retries**: a dropped connection or a read timeout is retried twice with a short backoff
+  (0.5s, 1s) and then surfaces as `FigmaError("Could not reach Figma: <Exception>.")` — a blip
+  is usually momentary, and library internals never reach the user. This is deliberately separate
+  from the server-side loop below, which backs off for minutes on purpose.
+- **Error messages** are written to be readable on their own (`Figma refused the request (HTTP
+  403): Not authorized.`) rather than exposing the endpoint, because the UI classifies them by
+  wording — see `src/api-errors.js`.
 - **Retries**: 429/5xx retry up to 6 times honoring `retry-after` (clamped 1–60s), exponential
   backoff otherwise.
+- **One pooled connection**: the client holds a `requests.Session` (tests inject their own
+  `request_get` instead). A folder browse is one call per file, and a fresh TLS handshake per call
+  was a large share of its latency.
+- **Editor-type cache**: neither the v2 folder listing nor the v1 project listing carries
+  `editorType`, so a type costs one `/meta` call. Resolved types are kept in
+  `APP_SUPPORT/editor-types.json` (capped at 5000 keys, written once per batch) and read back
+  without any network call, which makes a second visit to a folder instant. A file's type rarely
+  changes, so a stale entry costs at most a wrong-looking icon.
 - **Recursion**: `walk_tree(roots)` returns deduplicated files (each tagged with its ancestor
   folder path) plus every visited folder path — used for team/folder backups and archive
   pre-creation.
@@ -92,7 +108,15 @@ UI as a sequential queue of per-item `start_download` calls (see “Backup queue
 | `~/Library/Application Support/Fig Backup/` | `token.json` (0600), `preferences.json`, `archive-roots.json`, `archives/<team>/paths.json`, runtime `venv/` (launcher) |
 | `~/Library/Application Support/Figma Fig Downloader/` | Legacy `teams.json`, `downloads.json` index, bundled Chromium profile, and separate Chrome/Edge profiles |
 | `~/Downloads/Fig Backup/<Team>/…` | Tree backups (folder structure preserved, stable collision-safe names) |
-| `~/Downloads/*.fig` | Single-file downloads |
+| `~/Downloads/*.fig` | Single-file downloads (also `.jam` / `.deck` for FigJam and Slides) |
+
+Both archive indexes are keyed by file key and remember the path they chose, so a repeat backup
+skips the browser entirely. That memory outlives an editor-format change, so `target()` repairs an
+entry whose extension disagrees with the file's actual editor type instead of failing: the recorded
+`.fig` for a FigJam or Slides file is re-pointed to `.jam` / `.deck` (same folder, same stem, still
+collision-safe) and the corrected name is written back. Without this the bad entry is re-read on
+every launch and every Retry fails identically — the legacy `downloads.json` is shared with the
+older Figma Fig Downloader, which named everything `.fig`.
 
 `preferences.json` holds `{language: "en"|"fa", theme: "system"|"light"|"dark",
 onboarding_complete: bool}`. English is the default; the setup wizard has no language step.

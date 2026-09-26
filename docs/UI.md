@@ -8,12 +8,14 @@ Screens, flows, and rules of the Fig Backup interface. The implementation lives 
 
 - Window: 960×700 (min 640×520). The **content column is capped at 680px**, centered.
 - Sticky top bar: “Fig Backup” with *Download manager* (download icon, opens a popover) and *Settings* (gear) on the trailing edge. On Settings, the bar contains only a Back icon and “Settings” title. On macOS it fills the transparent native titlebar; the traffic-light controls stay at the physical left, with extra clearance below 840px.
-- No sidebar. Navigation is the **breadcrumb** — `Teams / <Team> / <Folder>…` — where *Teams* is
-  always the root exit, plus a predictable Back chevron next to the page title.
+- No sidebar. Navigation is the **breadcrumb** — `Teams / <Team> / <Folder>…` — rendered in the
+  header itself. Every ancestor is a real target, so the user can see where they are and jump up a
+  level; *Teams* is always the root exit. The current crumb is the page's `h1`, and long names
+  truncate rather than wrap the bar.
 
 ## Setup wizard (first run, or Settings → Redo setup)
 
-Shown when there is no stored token or setup was never completed. Two steps with a numbered rail
+Shown when there is no stored token or setup was never completed. Three steps with a numbered rail
 (done / current / upcoming).
 
 | Step | Contents | Exits |
@@ -48,19 +50,33 @@ launch), the list is replaced by skeleton rows.
 
 ## Browse (folders & files)
 
-Header: Back chevron + page title (current folder/team), breadcrumb underneath. Actions on the
-trailing edge depend on context:
+Header: the breadcrumb on the leading edge, actions on the trailing edge depending on context:
 
 | Context | Actions |
 | --- | --- |
 | Team root, not selecting | *Download all* (primary) + *Select* |
 | Inside a folder, not selecting | *Download all* + *Select* |
-| Select mode | tri-state **Select-all** checkbox + “N of M selected” + *Done* |
+| Select mode | *Done* (leaves select mode) |
+
+Entering select mode adds a bar above the list, holding the tri-state **Select-all** checkbox, a
+folder-scoped “N of M selected” counter, and a primary **Back up N items** button that queues the
+whole selection. The counter counts only what is on screen, because the selection store is per team
+and survives navigation: when items are selected in other folders the bar also says how many, with
+a *Clear all selections* link. The button label always shows the team-wide total it will queue.
+*Done*, Esc, and the bar's own affordances are the only ways out.
 
 Content uses the same borderless, rounded row style as Teams. Folders appear first in alphabetical order, followed by files in
 alphabetical order. There are no section headers or download-location note. While a team or folder
 listing loads, seven skeleton rows (pulsing tile + two lines, `role="status"`) replace the list —
 navigation happens instantly and the data fills in.
+
+The child-folder and file listings are fetched **in parallel**, and a file row does not wait for its
+type: Figma's listings never include `editorType`, so resolving one costs an API call per file.
+Names, row actions and the select checkboxes are usable as soon as the listing lands, and the
+28px tile shows a pulsing placeholder until the type arrives — the row never claims a file is a
+Design file before knowing. The type lookup is discarded if the user navigates away first, and a
+failure or rate limit simply leaves the Design glyph in place. Types are cached on disk, so a
+second visit to the same folder usually shows the right icons with no lookup at all.
 
 - **Not selecting** — clicking a folder row opens it (chevron affordance); per-row buttons offer
   single *Back up* (folder, recursive) and *Download*.
@@ -99,15 +115,21 @@ download manager (see the Figma source of truth):
 - One-time browser setup states render as slim banners between the header and the list (spinner
   card while installing, danger card + full-width *Retry setup* on failure, a one-line “Browser
   ready” flash for 2.5s after success).
-- The list is split into two counted sections: **In Progress** (queued, running, partial, skipped, failed, stopped)
-  and **Completed** (done). Each row: a 28px icon (the real Figma file icon for files; muted
-  `Users`/`Folder` tile for teams/folders), the name, and a **status caption** underneath —
+- The list is split into three counted sections: **In Progress** (queued, running), **Needs
+  attention** (failed, stopped — on a danger-tinted band so a dead run is never read as work still
+  in flight), and **Completed** (done). Partial and skipped rows sit with the run that produced
+  them. Each row: a 28px icon (the real Figma file icon for files; the team avatar for teams, muted
+  `Folder` tile for folders), the name, and a **status caption** underneath —
   “Queue” while queued; the live export stage while running, using the design's exact wording
   (*Opening file... → Downloading assets... → Bundling...*), with “Collecting files…” plus an
   elapsed m:ss counter during the scanning phase, and a “*done* of *total* files” suffix for
-  folder/team items); the
-  error text for failures; and the **file size** (or the file count for folder/team rows) once
-  done.
+  folder/team items; the error text for failures. Only the stage text is in an `aria-live` region,
+  so a screen reader hears each stage change without the per-file counter firing on every file.
+- A finished row reports **what actually happened**, never a generic success: *Saved* with the byte
+  size, *Already saved* when every file was already on disk (an existing file reports no size, so
+  no byte count is shown), or *Renamed* when only a legacy name was migrated. Folder and team rows
+  combine the file count with the total size, prefixed by *Already saved* when nothing new was
+  fetched.
 - Trailing per-row actions: queued rows show **Cancel** (remove from queue) and **Download
   next** (play — runs that item first) on hover or keyboard focus; the running row shows a spinner
   that swaps to **Cancel** (stop after current) the same way; completed rows show **Show in folder**
@@ -120,7 +142,8 @@ download manager (see the Figma source of truth):
 
 Items run **sequentially** (folders first, then files). Closing the popover never affects the run;
 Esc closes it and returns focus to the control that opened it. The popover is non-modal, so the rest
-of the app remains available while a backup runs.
+of the app remains available while a backup runs. It holds a **400px minimum height** (clamped to
+the available height) so it does not resize under the pointer when the first row arrives.
 
 ## Settings
 
@@ -175,6 +198,20 @@ of the app remains available while a backup runs.
 - Visible `focus-visible` rings on every interactive control; Esc exits select mode or closes the download manager and restores focus.
 - Selection counts and run status updates are announced via `role="status"`; errors use
   `role="alert"`.
+- **The error banner** is the app's single explanation surface. It carries a **localized
+  headline** (what went wrong), a **localized hint** (what to do), a **Retry** button, and a
+  close button. Raw backend wording is never shown inline — it sits behind a *Technical details*
+  disclosure, so the user has something concrete to paste into a bug report without the banner
+  ever opening with library internals. Classification lives in `src/api-errors.js` (pure, unit
+  tested): *network* → “Couldn’t reach Figma” + the connection hint, *access* → “Figma denied the
+  request” (a 401 gets its own token headline) + the permissions hint, *rate* → “Too many
+  requests”, and anything unrecognized is shown verbatim with no redundant detail block.
+- **Retry replays the whole operation.** Every bridge call runs through `call(label, action)`,
+  where `action` is self-contained — it fetches *and* applies the result — so re-running it
+  repeats the operation rather than re-fetching data nobody reads. It covers browse, teams
+  folders, the token, the three setup steps, preferences, and the initial bootstrap (which
+  previously left the app with no way forward but a relaunch). It is deliberately absent for
+  failures that are not a failed operation, such as a sign-in that simply has not happened yet.
 - Status is never color-only: every queue state pairs an icon + text label with its tint.
 - Interactive targets are ≥ 24px (checkbox buttons are 24px; row actions h-24+ with spacing).
 - `prefers-reduced-motion` disables the spinner and slide transitions (opacity fades instead).

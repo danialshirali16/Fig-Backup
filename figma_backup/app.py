@@ -15,7 +15,7 @@ import webview
 from playwright._impl._errors import TargetClosedError
 
 from .browser import Browser, chromium_ready
-from .core import APP_SUPPORT, BrowserAuthError, DOWNLOADS, SUPPORT, ArchiveIndex, FigmaClient, FigmaError, PreferencesStore, TokenStore, TreeArchiveIndex, merge_teams, read_json, team_id_from_input, write_json
+from .core import APP_SUPPORT, BrowserAuthError, DOWNLOADS, SUPPORT, ArchiveIndex, EditorTypeCache, FigmaClient, FigmaError, PreferencesStore, TokenStore, TreeArchiveIndex, merge_teams, read_json, team_id_from_input, write_json
 
 # Editor types this app can export via the web editor's "Save local copy".
 SUPPORTED_EDITOR_TYPES = ("figma", "figjam", "slides")
@@ -64,7 +64,7 @@ class Bridge:
         self.token_store = TokenStore()
         self.preferences_store = PreferencesStore()
         self.token = os.environ.get("FIGMA_PAT") or self.token_store.load()
-        self.client = FigmaClient(self.token) if self.token else None
+        self.client = self._make_client(self.token) if self.token else None
         self.lock = threading.Lock()
         self.state = {"running": False, "phase": "idle", "items": [], "current": 0, "total": 0,
                       "saved": 0, "existing": 0, "skipped": 0, "failed": 0,
@@ -75,6 +75,10 @@ class Bridge:
                               "message": "", "source": system[0][0] if system else "chromium"}
         self.maximized = False
         self.stop_requested = False
+
+    @staticmethod
+    def _make_client(token: str) -> FigmaClient:
+        return FigmaClient(token, type_cache=EditorTypeCache(APP_SUPPORT / "editor-types.json"))
 
     def minimize_window(self) -> dict:
         webview.windows[0].minimize()
@@ -194,11 +198,13 @@ class Bridge:
         token = token.strip()
         if not token:
             raise FigmaError("Token cannot be empty")
-        candidate = FigmaClient(token)
+        candidate = self._make_client(token)
         user = candidate.me()
         setup_required = self.token != token and self.preferences_store.load()["setup_version"] == 2
         self.token_store.save(token)
-        self.token, self.client = token, candidate
+        previous, self.token, self.client = self.client, token, candidate
+        if previous is not None and previous is not candidate:
+            previous.close()
         if setup_required:
             self.begin_setup()
         else:
@@ -262,40 +268,52 @@ class Bridge:
         return {"folders": folders, "unavailable": str(folder_id) in client.unavailable_subfolders}
 
     def files(self, folder_id: str) -> dict:
+        """The folder listing, with every type already known applied.
+
+        The listing itself never carries an editor type, and resolving a type
+        costs one API call per file — so this returns the names immediately and
+        leaves the icons to file_types() once the rows are already on screen.
+        """
         client = self._required()
         files = client.files(folder_id)
-        self._resolve_editor_types(client, files)
+        client.apply_cached_types(files)
         return {"files": files, "unavailable": str(folder_id) in client.unavailable_subfolders}
 
-    @staticmethod
-    def _resolve_editor_types(client: FigmaClient, files: list[dict]) -> None:
-        """Fill in each file's editor type (cached per key) for the file-type icons.
+    def file_types(self, keys: list) -> dict:
+        """Resolve the file-type icons for a listing that is already displayed.
 
-        A large folder is one API call per file; four workers keep the browse
-        fast without bursting into Figma's rate limit. On a confirmed 429 the
-        remaining lookups are dropped — icons fall back and the download path
-        resolves types itself.
+        Returns a map covering every requested key, with null where the type
+        could not be read, so the UI can tell "still loading" from "unknown".
         """
-        pending = [file for file in files
-                   if file.get("key") and not (file.get("editorType") or file.get("editor_type"))]
-        if not pending:
-            return
+        client = self._required()
+        wanted: list[str] = []
+        for key in keys if isinstance(keys, list) else []:
+            key = str(key or "")
+            if key and key not in wanted:
+                wanted.append(key)
+        if not wanted:
+            return {}
+        result: dict[str, str | None] = {}
         pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="figma-meta")
         try:
-            futures = [(pool.submit(client.editor_type, file), file) for file in pending]
-            for future, file in futures:
+            futures = [(pool.submit(client.editor_type, {"key": key}), key) for key in wanted]
+            for future, key in futures:
                 try:
-                    kind = future.result()
+                    result[key] = future.result() or None
                 except FigmaError as error:
+                    # A confirmed rate limit drops the rest: icons fall back to the
+                    # Design glyph and the download path resolves types itself.
                     if error.status == 429:
                         break
-                    continue
+                    result[key] = None
                 except Exception:
-                    continue
-                if kind:
-                    file["editorType"] = kind
+                    result[key] = None
         finally:
             pool.shutdown(wait=False, cancel_futures=True)
+        for key in wanted:
+            result.setdefault(key, None)
+        client.flush_types()
+        return result
 
     def start_download(self, selection: dict) -> dict:
         self._required()
@@ -419,6 +437,7 @@ class Bridge:
                 )
                 self.state["running"] = False
                 self.state["finished"] = True
+            client.flush_types()
         except Exception as error:
             self._set(running=False, finished=True, phase="error", message=str(error).splitlines()[0])
 

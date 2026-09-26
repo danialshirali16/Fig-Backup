@@ -177,24 +177,37 @@ class ArchiveIndex:
             if isinstance(value, str) and Path(value).name == value and value.lower().endswith(NATIVE_EXTENSIONS)
         } if isinstance(body, dict) and isinstance(body.get("files"), dict) else {}
 
-    def target(self, file: dict) -> tuple[Path, bool]:
-        key = str(file["key"])
-        extension = native_extension(file.get("editorType"))
-        if key in self.names:
-            return self.downloads / self.names[key], False
-        base = clean_name(file.get("name"))
-        reserved = {value.casefold() for value in self.names.values()}
+    def _available(self, base: str, extension: str, ignore: str | None = None) -> str:
+        """A free filename in Downloads, honouring both recorded names and disk."""
+        reserved = {value.casefold() for key, value in self.names.items() if key != ignore}
         number = 0
         while True:
             suffix = f"({number})" if number else ""
             filename = f"{base}{suffix}{extension}"
             if filename.casefold() not in reserved and not (self.downloads / filename).exists():
-                break
+                return filename
             number += 1
+
+    def target(self, file: dict) -> tuple[Path, bool]:
+        key = str(file["key"])
+        extension = native_extension(file.get("editorType"))
+        if key in self.names:
+            recorded = self.names[key]
+            if Path(recorded).suffix.lower() == extension:
+                return self.downloads / recorded, False
+            # The recorded extension disagrees with the file's editor type: an
+            # older build, or the legacy Figma Fig Downloader, named every file
+            # .fig. Re-point the entry instead of failing the run forever.
+            name = self._available(Path(recorded).stem or clean_name(file.get("name")),
+                                   extension, ignore=key)
+            self.names[key] = name
+            write_json(self.path, {"version": 1, "files": self.names})
+            return self.downloads / name, False
+        filename = self._available(clean_name(file.get("name")), extension)
         destination = self.downloads / filename
         migrated = False
         if re.fullmatch(r"[A-Za-z0-9_-]+", key):
-            legacy = self.downloads / f"{base}--{key}.fig"
+            legacy = self.downloads / f"{clean_name(file.get('name'))}--{key}.fig"
             if legacy.exists():
                 verify_fig(legacy)
                 legacy.rename(destination)
@@ -284,39 +297,124 @@ class TreeArchiveIndex:
 
     def target(self, file: dict) -> tuple[Path, bool]:
         key = str(file["key"])
+        extension = native_extension(file.get("editorType"))
         if key in self.files:
-            destination = self.root / self.files[key]
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            return destination, False
+            recorded = self.files[key]
+            if Path(recorded).suffix.lower() == extension:
+                destination = self.root / recorded
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                return destination, False
+            # Same repair as ArchiveIndex: a recorded .fig for a FigJam/Slides
+            # file is stale, not fatal. The folder stays, only the extension
+            # is corrected.
+            relative = Path(recorded).parent
+            directory = self.root / relative
+            directory.mkdir(parents=True, exist_ok=True)
+            reserved = {Path(value).name.casefold() for other, value in self.files.items()
+                        if other != key and Path(value).parent == relative}
+            name = self._available_name(Path(recorded).stem or clean_name(file.get("name")),
+                                        reserved, directory, extension)
+            self.files[key] = (relative / name).as_posix()
+            self._save()
+            return directory / name, False
         directory = self.folder_path(file["_folder_path"])
         directory.mkdir(parents=True, exist_ok=True)
         relative = directory.relative_to(self.root)
         reserved = {Path(value).name.casefold() for value in self.files.values()
                     if Path(value).parent == relative}
-        name = self._available_name(clean_name(file.get("name")), reserved, directory, native_extension(file.get("editorType")))
+        name = self._available_name(clean_name(file.get("name")), reserved, directory, extension)
         destination = directory / name
         self.files[key] = (relative / name).as_posix()
         self._save()
         return destination, False
 
 
+class EditorTypeCache:
+    """File key → editor type, kept on disk between launches.
+
+    The folder listings never include the type, so every visit would otherwise
+    cost one `/meta` call per file. A file's type rarely changes, so a stale
+    entry costs at most a wrong-looking icon.
+    """
+
+    LIMIT = 5000
+
+    def __init__(self, path: Path | None = None):
+        self.path = path
+        body = read_json(path, {}) if path else {}
+        types = body.get("types") if isinstance(body, dict) else None
+        self.types: dict[str, str] = {
+            key: value for key, value in (types or {}).items()
+            if isinstance(key, str) and key and isinstance(value, str) and value
+        }
+        self._pending: dict[str, str] = {}
+
+    def get(self, key: str) -> str | None:
+        return self.types.get(key)
+
+    def set(self, key: str, kind: str) -> None:
+        if not key or not kind:
+            return
+        self.types[key] = kind
+        self._pending[key] = kind
+
+    def flush(self) -> None:
+        """Write once per batch; resolving a folder must not rewrite the file per file."""
+        if not self.path or not self._pending:
+            return
+        while len(self.types) > self.LIMIT:
+            self.types.pop(next(iter(self.types)))
+        try:
+            write_json(self.path, {"version": 1, "types": self.types})
+        except OSError:
+            pass
+        self._pending.clear()
+
+
 class FigmaClient:
-    def __init__(self, token: str, request_get: Callable | None = None):
+    # A dropped connection usually clears on its own within a second or two, so a
+    # short local retry hides almost every real connectivity blip.
+    NETWORK_ATTEMPTS = 3
+    NETWORK_BACKOFF = 0.5
+
+    def __init__(self, token: str, request_get: Callable | None = None,
+                 type_cache: EditorTypeCache | None = None):
         self.token = token
-        self.request_get = request_get or requests.get
+        self.request_get = request_get
+        # One pooled connection: the listings cost a call per file, and a fresh
+        # TLS handshake per call dominated the browse time.
+        self._session = requests.Session() if request_get is None else None
         self.folder_api = "v2"
         self.unavailable_subfolders: set[str] = set()
-        self._editor_type_cache: dict[str, str] = {}
+        self._type_store = type_cache or EditorTypeCache()
+        self._editor_type_cache: dict[str, str] = self._type_store.types
+
+    def close(self) -> None:
+        if self._session is not None:
+            self._session.close()
+            self._session = None
 
     def get(self, endpoint: str) -> dict:
+        request = self._session.get if self._session is not None else self.request_get
         for attempt in range(6):
-            response = self.request_get(
-                "https://api.figma.com" + endpoint,
-                headers={"X-Figma-Token": self.token}, timeout=30,
-            )
+            try:
+                response = request(
+                    "https://api.figma.com" + endpoint,
+                    headers={"X-Figma-Token": self.token}, timeout=30,
+                )
+            except requests.RequestException as error:
+                # A dropped connection or a read timeout is nearly always momentary.
+                # Kept short and separate from the 429/5xx loop below, which backs
+                # off for minutes on purpose and must not be shortchanged here.
+                if attempt >= self.NETWORK_ATTEMPTS - 1:
+                    raise FigmaError(
+                        f"Could not reach Figma: {type(error).__name__}."
+                    ) from error
+                time.sleep(self.NETWORK_BACKOFF * 2 ** attempt)
+                continue
             if response.status_code == 429 or response.status_code >= 500:
                 if attempt == 5:
-                    raise FigmaError(f"Figma API HTTP {response.status_code}: {endpoint}", response.status_code)
+                    raise FigmaError(f"Figma is busy (HTTP {response.status_code}).", response.status_code)
                 retry_after = response.headers.get("retry-after")
                 try:
                     delay = min(max(float(retry_after), 1), 60)
@@ -330,13 +428,19 @@ class FigmaClient:
                     detail = body.get("message") or body.get("err") or ""
                 except (ValueError, AttributeError):
                     detail = ""
-                raise FigmaError(f"Figma API HTTP {response.status_code}: {endpoint}{': ' + str(detail) if detail else ''}", response.status_code)
+                raise FigmaError(
+                    f"Figma refused the request (HTTP {response.status_code}){': ' + str(detail) if detail else ''}.",
+                    response.status_code,
+                )
             try:
                 body = response.json()
             except ValueError as error:
-                raise FigmaError(f"Figma API returned a non-JSON response: {endpoint}", response.status_code) from error
+                raise FigmaError(
+                    f"Figma returned a non-JSON response (HTTP {response.status_code}).",
+                    response.status_code,
+                ) from error
             if not isinstance(body, dict):
-                raise FigmaError(f"Unexpected Figma API response: {endpoint}")
+                raise FigmaError("Figma returned an unexpected response.")
             return body
         raise AssertionError("unreachable")
 
@@ -420,6 +524,18 @@ class FigmaClient:
             pending.extend((child, [*ancestors, child]) for child in reversed(children))
         return files, folders
 
+    def apply_cached_types(self, files: list[dict]) -> None:
+        """Fill in types already known, with no network call. The listing itself
+        never carries an editor type, so this is what makes a revisit instant."""
+        for file in files:
+            if file.get("key") and not (file.get("editorType") or file.get("editor_type")):
+                kind = self._editor_type_cache.get(str(file["key"]))
+                if kind:
+                    file["editorType"] = kind
+
+    def flush_types(self) -> None:
+        self._type_store.flush()
+
     def editor_type(self, file: dict) -> str | None:
         if file.get("editorType") or file.get("editor_type"):
             return file.get("editorType") or file.get("editor_type")
@@ -437,5 +553,5 @@ class FigmaClient:
                 raise
             kind = self.get(f"/v1/files/{key}?depth=1").get("editorType")
         if kind:
-            self._editor_type_cache[key_str] = kind
+            self._type_store.set(key_str, kind)
         return kind

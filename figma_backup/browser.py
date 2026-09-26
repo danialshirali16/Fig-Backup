@@ -569,6 +569,21 @@ class Browser:
             self.use_headless_shell = True
         self.stop()
 
+    def _goto(self, url: str, **kwargs):
+        """page.goto with readable failures instead of Playwright's raw text.
+
+        TargetClosedError is re-raised untouched: app.py recovers from a browser
+        crash by reopening headless, and that path keys off this exception.
+        """
+        try:
+            return self.page.goto(url, **kwargs)
+        except TargetClosedError:
+            raise
+        except PlaywrightTimeout as error:
+            raise FigmaError(f"Figma took too long to respond: {url}") from error
+        except Exception as error:
+            raise FigmaError(f"Could not reach Figma: {str(error).splitlines()[0]}") from error
+
     def open_sign_in(self) -> None:
         self.open(headless=False)
         try:
@@ -673,7 +688,7 @@ class Browser:
             self.close()
         if self.context is None:
             self.open(headless=True)
-        self.page.goto("https://www.figma.com/files", wait_until="domcontentloaded", timeout=90000)
+        self._goto("https://www.figma.com/files", wait_until="domcontentloaded", timeout=90000)
         try:
             self.page.wait_for_function("() => document.querySelector('button[aria-label^=\"Plan:\"]') || document.querySelector('a[href*=\"/team/\"]')", timeout=15000)
         except PlaywrightTimeout:
@@ -793,7 +808,7 @@ class Browser:
         # under /board/ (reached via the /file/ redirect — /figjam/ now 404s).
         segment = {"figma": "design", "figjam": "file", "slides": "slides"}.get(
             str(file.get("editorType") or "").lower(), "design")
-        response = self.page.goto(
+        response = self._goto(
             f"https://www.figma.com/{segment}/{file['key']}",
             wait_until="domcontentloaded", timeout=90000,
         )

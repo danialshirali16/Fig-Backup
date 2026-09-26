@@ -36,6 +36,10 @@ const filesByFolder = {
   '30003': [{ key: 'sample-10', name: 'Buttons and Inputs' }],
 }
 
+const previewTypes = Object.fromEntries(
+  Object.values(filesByFolder).flat().map(file => [file.key, file.editorType ?? 'figma']),
+)
+
 const idleStatus = () => ({
   running: false, phase: 'idle', items: [], total: 0, saved: 0,
   existing: 0, skipped: 0, failed: 0, message: '',
@@ -48,11 +52,27 @@ export function installPreviewBridge() {
   // `?preview=1&browser-install` exercises the one-time setup state.
   // `&fresh` starts with onboarding pending so the setup wizard is shown.
   // `&win-titlebar` fakes the Windows shell to render the in-app caption buttons.
+  // `&lang=fa` and `&theme=dark` open in that language / theme, so RTL and dark
+  // mode can be checked without clicking through Settings first.
   const params = new URLSearchParams(window.location.search)
   const fakeInstall = params.has('browser-install')
   const fakeWindows = params.has('win-titlebar')
   const slowMode = params.has('slow')
   let failFirstRun = params.has('fail')
+  // `&api-error` makes the next folder/file listing fail with a backend-shaped
+  // message, so the error banner and its Retry button can be seen. Clicking
+  // Retry succeeds, which is the whole point of the affordance.
+  const apiErrorMode = params.get('api-error')
+  let apiErrorSpent = false
+  const maybeApiError = (label, ok) => {
+    if (!apiErrorMode || apiErrorSpent) return ok()
+    apiErrorSpent = true
+    throw new Error({
+      network: 'Could not reach Figma: ConnectionError.',
+      access: 'Figma refused the request (HTTP 403): Not authorized.',
+      rate: 'Figma is busy (HTTP 429).',
+    }[apiErrorMode] || 'Something went wrong.')
+  }
   let stopRun = null
   const lag = () => new Promise(resolve => window.setTimeout(resolve, slowMode ? 1200 : 0))
   let browserState = fakeInstall ? { phase: 'setting_up', message: '' } : { phase: 'ready', message: '', source: 'chrome' }
@@ -61,7 +81,12 @@ export function installPreviewBridge() {
   }
   let fakeMaximized = false
 
-  let preferences = { language: 'en', theme: 'system', onboarding_complete: !params.has('fresh'), setup_version: params.has('fresh') ? 0 : 2 }
+  let preferences = {
+    language: params.get('lang') || 'en',
+    theme: params.get('theme') || 'system',
+    onboarding_complete: !params.has('fresh'),
+    setup_version: params.has('fresh') ? 0 : 2,
+  }
   let browserVerified = false
   let tokenVerified = false
   let signedIn = false
@@ -108,9 +133,19 @@ export function installPreviewBridge() {
       },
       close_window: async () => ({ ok: true }),
       begin_resize: async () => ({ ok: false }),
-      folders: async id => lag().then(() => ({ folders: foldersByParent[id] || [], legacy: false })),
-      subfolders: async id => lag().then(() => ({ folders: foldersByParent[id] || [], unavailable: false })),
-      files: async id => lag().then(() => ({ files: filesByFolder[id] || [], unavailable: false })),
+      folders: async id => lag().then(() => maybeApiError('folders', () => ({ folders: foldersByParent[id] || [], legacy: false }))),
+      subfolders: async id => lag().then(() => maybeApiError('subfolders', () => ({ folders: foldersByParent[id] || [], unavailable: false }))),
+      // The real listing never carries an editor type, so the preview must not
+      // either — that is what makes the rows show a placeholder first.
+      files: async id => lag().then(() => maybeApiError('files', () => ({
+        files: (filesByFolder[id] || []).map(({ editorType, ...rest }) => rest),
+        unavailable: false,
+      }))),
+      // Icons resolve after the names are already on screen; `slow` widens the
+      // gap so the placeholder is easy to see.
+      file_types: async keys => lag().then(() => Object.fromEntries(
+        (keys || []).map(key => [key, previewTypes[key] ?? 'figma']),
+      )),
       start_download: async () => {
         // Simulate the real lifecycle: scanning, then per-file checking/opening/preparing/saving.
         const files = ['Home Screen', 'Navigation', 'Profile Settings']

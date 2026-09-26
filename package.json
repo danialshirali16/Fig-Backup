@@ -6,7 +6,7 @@
   "scripts": {
     "build": "vite build",
     "dev": "vite --host 127.0.0.1",
-    "test:node": "node --test tests/download-errors.test.js tests/download-queue.test.js"
+    "test:node": "node --test tests/*.test.js"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.3",
