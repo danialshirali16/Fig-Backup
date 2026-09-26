@@ -68,6 +68,12 @@ UI as a sequential queue of per-item `start_download` calls (see “Backup queue
 - **Recursion**: `walk_tree(roots)` returns deduplicated files (each tagged with its ancestor
   folder path) plus every visited folder path — used for team/folder backups and archive
   pre-creation.
+- **403 is not a session failure**: when the editor returns HTTP 403 for a file, that file fails and
+  the run continues — it is usually file-level access, or Figma blocking the background browser. Only
+  a redirect to the login *route* (first path segment `login` / `signin` / `signup` / `password`,
+  so a file merely named "login" cannot trigger it) raises `BrowserAuthError`, which is the one signal
+  that ends the queue. Treating a per-file 403 as a dead session used to abort the remaining queue
+  *and* reset the user's completed setup, because routing to the wizard calls `begin_setup()`.
 - **editorType check**: only supported editor types (Figma Design, FigJam, Slides) are downloaded;
   each editor opens under its own route (`/design/`, `/file/` → redirects to `/board/` for FigJam,
   `/slides/`), and any other file type is skipped with its type noted in the queue. Each editor's

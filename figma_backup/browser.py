@@ -813,8 +813,19 @@ class Browser:
             wait_until="domcontentloaded", timeout=90000,
         )
         if response and response.status == 403:
-            raise BrowserAuthError("Figma blocked the background editor (HTTP 403). No browser window was opened.")
-        if re.search(r"/login|/signin", self.page.url):
+            # A 403 on ONE file is not a dead session: it is usually file-level
+            # access, or Figma blocking the background browser. Raising the auth
+            # error here aborted the whole queue AND reset the user's completed
+            # setup, so a single blocked file threw them back into the wizard.
+            raise FigmaError(
+                "Figma refused to open this file (HTTP 403). You may not have "
+                "access to it, or Figma is temporarily blocking the backup browser.",
+                403,
+            )
+        # The genuine session signal is the login *route* — match the first path
+        # segment only, so a file or board called "login" is not mistaken for it.
+        route = [part for part in urlparse(self.page.url).path.split("/") if part]
+        if route and route[0].lower() in ("login", "signin", "signup", "password"):
             raise BrowserAuthError("Browser sign-in is required. Use the Sign in button, then retry.")
         try:
             self.page.locator("canvas").first.wait_for(state="attached", timeout=120000)

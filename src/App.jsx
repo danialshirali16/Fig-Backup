@@ -4,7 +4,7 @@ import { toast } from 'sonner'
 import {
   AlertTriangle, Check, CheckCircle2, ChevronRight, Copy, Download, ExternalLink, Eye, EyeOff,
   Folder, FolderInput, Loader2, Minus, Play, RefreshCw, RotateCcw, Settings as SettingsIcon,
-  Square, X,
+  Search, Square, X,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -39,6 +39,27 @@ const LIVE_FILE_STATES = [...Object.keys(STEP_KEY)]
 /* Runs that ended badly get their own band: under "In Progress" a failed row
    reads as "still working on it". */
 const ATTENTION_STATES = ['failed', 'stopped']
+/* Terminal states that still offer a per-row Retry, so a new download must not drop them. */
+const RETRYABLE_STATES = ['failed', 'stopped', 'partial', 'skipped']
+
+/* Wraps the matched part of a name so a search hit is obvious. Offsets come
+   from the lowercased string, which is only safe because lowercasing these
+   names does not change their length. */
+function Highlighted({ text, term }) {
+  const value = String(text || '')
+  if (!term) return value
+  const at = value.toLocaleLowerCase().indexOf(term.toLocaleLowerCase())
+  if (at < 0) return value
+  return (
+    <>
+      {value.slice(0, at)}
+      <mark className="rounded-[3px] bg-[var(--figma-color-bg-warning-tertiary)] px-0.5 text-[var(--figma-color-text-warning)]">
+        {value.slice(at, at + term.length)}
+      </mark>
+      {value.slice(at + term.length)}
+    </>
+  )
+}
 
 const fmtBytes = (bytes) => {
   if (!bytes || bytes <= 0) return ''
@@ -216,6 +237,7 @@ function App() {
   const [folder, setFolder] = useState(null)
   const [trail, setTrail] = useState([])
   const [files, setFiles] = useState([])
+  const [query, setQuery] = useState('')
   const [authRequired, setAuthRequired] = useState(false)
   const [loginOpen, setLoginOpen] = useState(false)
   const [busy, setBusy] = useState('')
@@ -227,6 +249,8 @@ function App() {
   const [queue, setQueue] = useState([])
   const [queueOpen, setQueueOpen] = useState(false)
   const [browserSetup, setBrowserSetup] = useState({ phase: 'ready', message: '' })
+  const [downloadsPath, setDownloadsPath] = useState('')
+  const [appVersion, setAppVersion] = useState('')
   const [setupReadyFlash, setSetupReadyFlash] = useState(false)
   const [now, setNow] = useState(Date.now())
   const queueRef = useRef([])
@@ -235,6 +259,7 @@ function App() {
   const selectBtnRef = useRef(null)
   const runIdRef = useRef(0)
   const discoverRunRef = useRef(0)
+  const discoveringRef = useRef(false)
   const browseRunRef = useRef(0)
   const browserWatchRef = useRef(false)
   const setupStartRef = useRef(0)
@@ -245,13 +270,21 @@ function App() {
   const countCopy = (key, count) => t(count === 1 ? `${key}One` : key, { count })
   const appearance = preferences.theme === 'system' ? (systemDark ? 'dark' : 'light') : preferences.theme
   const rtl = RTL_LANGUAGES.has(language)
+  /* Filtering is client-side: the listing is already in memory, so searching
+     costs no API call. Anything a user cannot see cannot be selected. */
+  const needle = query.trim()
   const [sortedFolders, sortedFiles] = useMemo(() => {
     const collator = new Intl.Collator(language, { sensitivity: 'base', numeric: true })
     const byName = (a, b) => collator.compare(a.name || '', b.name || '')
-    return [[...folders].sort(byName), [...files].sort(byName)]
-  }, [folders, files, language])
+    const search = needle.toLocaleLowerCase()
+    const matches = item => !search || (item.name || '').toLocaleLowerCase().includes(search)
+    return [[...folders].filter(matches).sort(byName), [...files].filter(matches).sort(byName)]
+  }, [folders, files, language, needle])
+  const listTotal = folders.length + files.length
+  const listShown = sortedFolders.length + sortedFiles.length
   const nativeMac = api && window.pywebview?.platform === 'cocoa'
   const nativeWin = api && window.pywebview?.platform === 'edgechromium'
+  const platformLabel = nativeWin ? 'Windows' : nativeMac ? 'macOS' : ''
   const [maximized, setMaximized] = useState(false)
   /* Bootstrap-time discover() closes over the initial 'en' language; read the live one. */
   const languageRef = useRef(language)
@@ -296,6 +329,8 @@ function App() {
   async function runBootstrap(bridge) {
     await call('bootstrap', async () => {
       const initial = await bridge.bootstrap()
+      if (initial.downloads) setDownloadsPath(initial.downloads)
+      if (initial.version) setAppVersion(initial.version)
       setHasToken(initial.has_token)
       setPreferences(initial.preferences)
       setTeams(initial.teams || [])
@@ -303,7 +338,11 @@ function App() {
       if (initial.browser && initial.browser.phase !== 'ready') watchBrowser(bridge)
       if (initial.preferences.onboarding_complete && initial.preferences.setup_version === 2 && initial.has_token) {
         setView('teams')
-        await discover(bridge)
+        // The app is usable the moment bootstrap returns. Discovering teams
+        // launches a browser and scrapes Figma, which can take seconds — the
+        // window must not sit on a bare spinner for that long.
+        setReady(true)
+        void discover(bridge, true)
       } else {
         setView('wizard')
         setWizardStep('browser')
@@ -372,10 +411,13 @@ function App() {
     return saved
   }
 
-  async function discover(bridge = api) {
-    if (busy === 'teams') return
+  /* `quiet` refreshes in place: the cached teams are already on screen, so
+     flashing skeletons over real data would only slow the launch down. */
+  async function discover(bridge = api, quiet = false) {
+    if (discoveringRef.current) return
+    discoveringRef.current = true
     const runId = ++discoverRunRef.current
-    setBusy('teams'); setError(''); setTeamsError('')
+    if (!quiet) { setBusy('teams'); setError(''); setTeamsError('') }
     try {
       const result = await bridge.discover_teams()
       if (runId !== discoverRunRef.current) return // a newer retry owns the screen
@@ -388,6 +430,7 @@ function App() {
       else setTeamsError(message)
     } finally {
       if (runId === discoverRunRef.current) setBusy('')
+      discoveringRef.current = false
     }
   }
 
@@ -512,7 +555,7 @@ function App() {
   }
 
   async function chooseTeam(value) {
-    setTeam(value); setView('browse'); setFolder(null); setTrail([]); setFolders([]); setFiles([]); setSelectMode(false)
+    setTeam(value); setView('browse'); setFolder(null); setTrail([]); setFolders([]); setFiles([]); setSelectMode(false); setQuery('')
     await call('folders', async () => {
       const result = await api.folders(value.id)
       setFolders(result.folders || [])
@@ -522,7 +565,7 @@ function App() {
 
   async function browseFolder(value, path = [...trail, value]) {
     const runId = ++browseRunRef.current
-    setFolder(value); setTrail(path); setFolders([]); setFiles([])
+    setFolder(value); setTrail(path); setFolders([]); setFiles([]); setQuery('')
     await call('browse', async () => {
       // Independent listings — there is no reason to wait for one to start the other.
       const [children, fileResult] = await Promise.all([api.subfolders(value.id), api.files(value.id)])
@@ -682,7 +725,12 @@ function App() {
     }
   }
   function enqueueItems(items, showDetails = true) {
-    changeQueue(current => queueRunnerRef.current ? [...current, ...items] : items)
+    changeQueue(current => {
+      if (queueRunnerRef.current) return [...current, ...items]
+      // A finished-but-actionable row carries a Retry the user may still want.
+      // Replacing the queue outright used to drop it without a word.
+      return [...current.filter(item => RETRYABLE_STATES.includes(item.status)), ...items]
+    })
     if (showDetails) setQueueOpen(true)
     void runQueue()
   }
@@ -1217,56 +1265,106 @@ function App() {
 
           {view === 'settings' && (
             <div className="w-full">
-              <div className="flex flex-wrap items-center justify-between gap-4 rounded-md px-3 py-2.5">
-                <Label htmlFor="setting-language">{t('language')}</Label>
-                <Select dir={rtl ? 'rtl' : 'ltr'} value={language} onValueChange={async value => { if (await savePrefs({ language: value })) toast.success(translate(value, 'savedNotice'), { id: 'app-notice' }) }}>
-                  <SelectTrigger id="setting-language" className="w-64 max-w-full"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    {LANGUAGES.map(item => (
-                      <SelectItem key={item.code} value={item.code}>{item.native}</SelectItem>
+              {/* One control column for every row: whatever a control's intrinsic
+                  width, it starts and ends on the same two edges. Groups are
+                  separated by 24px of space, rows inside a group by 8px. */}
+              {[
+                { heading: t('settingsSectionBackups'), rows: ['backup'] },
+                { heading: t('settingsSectionApp'), rows: ['language', 'theme'] },
+                { heading: t('setupSection'), rows: ['token', 'setup'] },
+              ].map((group, groupIndex) => (
+                <section key={group.heading} className={groupIndex ? 'mt-6' : undefined}>
+                  <h2 className="mb-2 px-3 text-[11px] font-bold uppercase tracking-wide text-muted-foreground">{group.heading}</h2>
+                  <div className="grid gap-2">
+                    {group.rows.map(row => (
+                      <div key={row} className="grid grid-cols-1 items-start gap-x-6 gap-y-2 rounded-lg px-3 py-2.5 transition-colors hover:bg-accent/40 sm:grid-cols-[minmax(0,1fr)_15rem]">
+                        {row === 'backup' && (
+                          <>
+                            <div className="min-w-0">
+                              <h3 className="text-sm font-medium">{t('backupLocation')}</h3>
+                              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{t('downloadLocation')}</p>
+                            </div>
+                            <div className="grid justify-items-stretch gap-2 sm:justify-items-end">
+                              <Button variant="outline" size="sm" className="w-full" onClick={() => call('open-folder', () => api.open_downloads())}>
+                                <FolderInput className="size-3.5" aria-hidden="true" /> {t('openDownloads')}
+                              </Button>
+                              {downloadsPath && <p dir="ltr" title={downloadsPath} className="w-full max-w-full select-all truncate rounded-md bg-muted/70 px-2 py-1 text-start font-mono text-[11px] text-muted-foreground">{downloadsPath}</p>}
+                            </div>
+                          </>
+                        )}
+
+                        {row === 'language' && (
+                          <>
+                            <Label htmlFor="setting-language" className="pt-1.5">{t('language')}</Label>
+                            <Select dir={rtl ? 'rtl' : 'ltr'} value={language} onValueChange={async value => { if (await savePrefs({ language: value })) toast.success(translate(value, 'savedNotice'), { id: 'app-notice' }) }}>
+                              <SelectTrigger id="setting-language" className="w-full"><SelectValue /></SelectTrigger>
+                              <SelectContent>
+                                {LANGUAGES.map(item => (
+                                  <SelectItem key={item.code} value={item.code}>{item.native}</SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </>
+                        )}
+
+                        {row === 'theme' && (
+                          <>
+                            <Label htmlFor="setting-theme" className="pt-1.5">{t('theme')}</Label>
+                            <Select dir={rtl ? 'rtl' : 'ltr'} value={preferences.theme} onValueChange={async value => { if (await savePrefs({ theme: value })) toast.success(t('savedNotice'), { id: 'app-notice' }) }}>
+                              <SelectTrigger id="setting-theme" className="w-full"><SelectValue /></SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="system">{t('system')}</SelectItem>
+                                <SelectItem value="light">{t('light')}</SelectItem>
+                                <SelectItem value="dark">{t('dark')}</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          </>
+                        )}
+
+                        {row === 'token' && (
+                          <>
+                            <div className="min-w-0">
+                              <h3 className="text-sm font-medium">{t('tokenSettings')}</h3>
+                              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{t('tokenSettingsHint')}</p>
+                            </div>
+                            <form onSubmit={saveTokenContinue} className="grid gap-2">
+                              <Label htmlFor="token-settings" className="sr-only">{t('newToken')}</Label>
+                              {/* A token is always LTR, so the field is LTR even in an
+                                  RTL layout — otherwise the placeholder renders
+                                  mirrored and the reveal button lands on the text. */}
+                              <div className="relative" dir="ltr">
+                                <Input id="token-settings" type={showToken ? 'text' : 'password'} value={token} onInput={e => { setToken(e.currentTarget.value); setTokenError('') }} placeholder="figd_…" autoComplete="off" aria-invalid={!!tokenError} className="pe-10" />
+                                <button type="button" onClick={() => setShowToken(v => !v)} aria-label={showToken ? t('hideToken') : t('showToken')} aria-pressed={showToken} className="absolute inset-y-0 end-0 grid w-10 place-items-center rounded-e-md text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring">
+                                  {showToken ? <EyeOff className="size-4" aria-hidden="true" /> : <Eye className="size-4" aria-hidden="true" />}
+                                </button>
+                              </div>
+                              {tokenError && <p role="alert" className="text-xs font-medium text-destructive">{tokenError}</p>}
+                              <Button type="submit" size="sm" className="w-full" disabled={!!busy}>{busy === 'token' ? <Spinner /> : null} {t(hasToken ? 'replaceToken' : 'newToken')}</Button>
+                            </form>
+                          </>
+                        )}
+
+                        {row === 'setup' && (
+                          <>
+                            <div className="min-w-0">
+                              <h3 className="text-sm font-medium">{t('setupSection')}</h3>
+                              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{t('setupRowHint')}</p>
+                            </div>
+                            <Button variant="outline" size="sm" className="w-full sm:self-center" onClick={redoSetup}>
+                              <RotateCcw className="size-3.5" aria-hidden="true" /> {t('redoSetup')}
+                            </Button>
+                          </>
+                        )}
+                      </div>
                     ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="flex flex-wrap items-center justify-between gap-4 rounded-md px-3 py-2.5">
-                <Label htmlFor="setting-theme">{t('theme')}</Label>
-                <Select dir={rtl ? 'rtl' : 'ltr'} value={preferences.theme} onValueChange={async value => { if (await savePrefs({ theme: value })) toast.success(t('savedNotice'), { id: 'app-notice' }) }}>
-                  <SelectTrigger id="setting-theme" className="w-64 max-w-full"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="system">{t('system')}</SelectItem>
-                    <SelectItem value="light">{t('light')}</SelectItem>
-                    <SelectItem value="dark">{t('dark')}</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="flex flex-wrap items-start justify-between gap-4 rounded-md px-3 py-2.5">
-                <div>
-                  <h2 className="text-sm font-medium">{t('tokenSettings')}</h2>
-                </div>
-                <form onSubmit={saveTokenContinue} className="grid w-full max-w-xs gap-2.5">
-                  <Label htmlFor="token-settings" className="sr-only">{t('newToken')}</Label>
-                  <div className="relative">
-                    <Input id="token-settings" type={showToken ? 'text' : 'password'} value={token} onInput={e => { setToken(e.currentTarget.value); setTokenError('') }} placeholder="figd_…" autoComplete="off" aria-invalid={!!tokenError} className="pe-10" />
-                    <button type="button" onClick={() => setShowToken(v => !v)} aria-label={showToken ? t('hideToken') : t('showToken')} aria-pressed={showToken} className="absolute inset-y-0 end-0 grid w-10 place-items-center rounded-e-md text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring">
-                      {showToken ? <EyeOff className="size-4" aria-hidden="true" /> : <Eye className="size-4" aria-hidden="true" />}
-                    </button>
                   </div>
-                  {tokenError && <p role="alert" className="text-xs font-medium text-destructive">{tokenError}</p>}
-                  <Button type="submit" className="justify-self-end" size="sm" disabled={!!busy}>{busy === 'token' ? <Spinner /> : null} {t(hasToken ? 'replaceToken' : 'newToken')}</Button>
-                </form>
-              </div>
-              <div className="flex flex-wrap items-center justify-between gap-4 rounded-md px-3 py-2.5">
-                <div>
-                  <h2 className="text-sm font-medium">{t('setupSection')}</h2>
-                  <p className="mt-1 text-xs text-muted-foreground">{t('setupRowHint')}</p>
-                </div>
-                <Button variant="outline" size="sm" onClick={redoSetup}><RotateCcw className="size-3.5" /> {t('redoSetup')}</Button>
-              </div>
+                </section>
+              ))}
             </div>
           )}
 
           {view === 'settings' && (
-            <Card className="mt-6 px-4 py-3.5">
+            <Card className="mt-6 px-3 py-3.5">
               <div className="flex flex-wrap items-start justify-between gap-4">
                 <div className="min-w-0">
                   <h2 className="text-sm font-medium">{t('donateTitle')}</h2>
@@ -1279,6 +1377,11 @@ function App() {
                 <img src={donateQr} alt="" className="size-28 flex-none rounded-md bg-white p-1" />
               </div>
             </Card>
+          )}
+          {view === 'settings' && appVersion && (
+            <p dir="ltr" className="mt-4 text-center text-[11px] tabular-nums text-muted-foreground">
+              Fig Backup {appVersion}{platformLabel ? ` · ${platformLabel}` : ''}
+            </p>
           )}
 
           {view === 'teams' && (
@@ -1348,12 +1451,42 @@ function App() {
               </div>
             )}
             <div>
+              {view === 'browse' && (
+                <div className="px-3 pb-2">
+                  <div className="relative">
+                    <Search className="pointer-events-none absolute start-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
+                    <Input
+                      type="search"
+                      value={query}
+                      onInput={event => setQuery(event.currentTarget.value)}
+                      placeholder={t('searchPlaceholder')}
+                      aria-label={t('searchPlaceholder')}
+                      className="h-8 ps-8 pe-8 text-[13px]"
+                    />
+                    {query && (
+                      <button
+                        type="button"
+                        onClick={() => setQuery('')}
+                        aria-label={t('close')}
+                        className="absolute end-1.5 top-1/2 grid size-6 -translate-y-1/2 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring"
+                      >
+                        <X className="size-3.5" aria-hidden="true" />
+                      </button>
+                    )}
+                  </div>
+                  <p className="mt-1.5 text-[11px] tabular-nums text-muted-foreground" role="status">
+                    {needle
+                      ? t('searchResults', { count: listShown, total: listTotal })
+                      : t('searchResults', { count: listTotal, total: listTotal })}
+                  </p>
+                </div>
+              )}
               {loadingBrowse && <SkeletonRows count={7} label={t('loading')} />}
               {sortedFolders.map(value => inSelect ? (
                   <div key={value.id} className={'flex flex-wrap items-center gap-3 rounded-md px-3 py-2.5 ' + (folderSelected(value.id) ? 'bg-primary/5' : '')}>
                     <Checkbox checked={folderSelected(value.id)} onCheckedChange={() => toggleFolder(value)} aria-label={t('ariaSelectItem', { name: value.name })} className="shrink-0" />
                     <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground"><Folder className="size-4" /></span>
-                    <span className="min-w-28 flex-1 break-words text-sm font-medium leading-snug [overflow-wrap:anywhere]"><bdi>{value.name}</bdi></span>
+                    <span className="min-w-28 flex-1 break-words text-sm font-medium leading-snug [overflow-wrap:anywhere]"><bdi><Highlighted text={value.name} term={needle} /></bdi></span>
                     <button className="flex flex-none items-center gap-1 rounded px-1.5 py-1 text-xs font-semibold text-brand-text hover:underline" onClick={() => browseFolder(value)} disabled={!!busy} aria-label={t('ariaOpen', { name: value.name })}>
                       {t('open')} <ChevronRight className="size-3.5 rtl:-scale-x-100" aria-hidden="true" />
                     </button>
@@ -1362,7 +1495,10 @@ function App() {
                   <div key={value.id} data-download-row="" className="flex flex-wrap items-center gap-3 rounded-md px-3 py-2.5 transition-colors hover:bg-accent/60">
                     <button className="flex min-w-0 flex-1 items-center gap-3 text-start" onClick={() => browseFolder(value)} disabled={!!busy} aria-label={t('ariaOpen', { name: value.name })}>
                       <span data-row-tile="" className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground"><Folder className="size-4" /></span>
-                      <span className="min-w-0 flex-1 break-words text-sm font-medium leading-snug [overflow-wrap:anywhere]"><bdi>{value.name}</bdi></span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block break-words text-sm font-medium leading-snug [overflow-wrap:anywhere]"><bdi><Highlighted text={value.name} term={needle} /></bdi></span>
+                        <span className="mt-0.5 block text-[11px] leading-4 text-muted-foreground">{t('includesSubfolders')}</span>
+                      </span>
                     </button>
                     <div className="flex shrink-0 items-center gap-3">
                       <Button variant="ghost" size="icon-sm" onClick={event => { flyToQueue(event.currentTarget.closest('[data-download-row]')?.querySelector('[data-row-tile]'), { describe: n => n === 1 ? t('queuedOne', { name: value.name }) : t('queuedMany', { count: n }) }); startDownload({ scope: 'folder', folder: value }) }} disabled={!!busy} aria-label={t('ariaBackupItem', { name: value.name })} title={t('ariaBackupItem', { name: value.name })}>
@@ -1378,18 +1514,19 @@ function App() {
                   <div key={value.key} className={'flex flex-wrap items-center gap-3 rounded-md px-3 py-2.5 ' + (fileSelected(value.key) ? 'bg-primary/5' : '')}>
                     <Checkbox checked={fileSelected(value.key)} onCheckedChange={() => toggleFile(value)} aria-label={t('ariaSelectItem', { name: value.name })} className="shrink-0" />
                     <FileIcon editorType={value.editorType} pending={value.editorType === undefined} />
-                    <span className="min-w-28 flex-1 break-words text-sm font-medium leading-snug [overflow-wrap:anywhere]"><bdi>{value.name}</bdi></span>
+                    <span className="min-w-28 flex-1 break-words text-sm font-medium leading-snug [overflow-wrap:anywhere]"><bdi><Highlighted text={value.name} term={needle} /></bdi></span>
                   </div>
                 ) : (
                   <div key={value.key} data-download-row="" className="flex flex-wrap items-center gap-3 rounded-md px-3 py-2.5 transition-colors hover:bg-accent/60">
                     <FileIcon editorType={value.editorType} pending={value.editorType === undefined} data-row-tile="" />
-                    <span className="min-w-28 flex-1 break-words text-sm font-medium leading-snug [overflow-wrap:anywhere]"><bdi>{value.name}</bdi></span>
+                    <span className="min-w-28 flex-1 break-words text-sm font-medium leading-snug [overflow-wrap:anywhere]"><bdi><Highlighted text={value.name} term={needle} /></bdi></span>
                     <Button variant="outline" size="sm" onClick={event => { flyToQueue(event.currentTarget.closest('[data-download-row]')?.querySelector('[data-row-tile]'), { describe: n => n === 1 ? t('queuedOne', { name: value.name }) : t('queuedMany', { count: n }) }); startDownload({ scope: 'file', folder, file_key: value.key, name: value.name, editor_type: value.editorType }) }} disabled={!!busy} aria-label={t('ariaDownloadItem', { name: value.name })}>
                       <Download className="size-3.5" aria-hidden="true" /> {t('downloadFile')}
                     </Button>
                   </div>
                 ))}
               </div>
+              {!loadingBrowse && needle && listTotal > 0 && listShown === 0 && <div className="px-3 py-8 text-center text-sm leading-relaxed text-muted-foreground text-pretty">{t('searchNoResults')}</div>}
               {!loadingBrowse && !folders.length && !files.length && <div className="px-3 py-8 text-center text-sm leading-relaxed text-muted-foreground text-pretty">{t(folder ? 'emptyFolder' : 'emptyTeam')}</div>}
             </div>
           )}

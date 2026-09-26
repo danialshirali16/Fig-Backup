@@ -37,6 +37,14 @@ The app first tries installed Chrome or Edge. If neither is available or usable,
 
 ## Teams
 
+**Launch never waits for team discovery.** `bootstrap()` returns the cached team list immediately,
+so the window paints the real teams as soon as it opens; the browser-backed re-scrape then refreshes
+them **in place**, with no skeleton flash over data that is already there. Discovery launches a
+browser and reads Figma's team switcher, which can take seconds — gating the whole UI on it left the
+window on a bare “Loading…” spinner for that whole time. A failed startup refresh keeps the cached
+list and reports a toast; only a launch with no cached teams falls back to the error state with
+*Retry*. A manual *Refresh* still shows skeletons, since there is nothing better to show yet.
+
 Borderless list of discovered teams (team avatar, name, chevron). Avatars discovered in the
 Figma team switcher are stored locally for display in the app; teams without an available image show
 their initial. *Refresh* re-scrapes the team switcher (hidden while the one-time browser setup is
@@ -69,6 +77,13 @@ Content uses the same borderless, rounded row style as Teams. Folders appear fir
 alphabetical order. There are no section headers or download-location note. While a team or folder
 listing loads, seven skeleton rows (pulsing tile + two lines, `role="status"`) replace the list —
 navigation happens instantly and the data fills in.
+
+A **search field** sits above the list. Filtering is client-side — the listing is already in
+memory, so it costs no API call and works offline. Matches are highlighted with the Figma warning
+colour, a `role="status"` line reports “N of M”, a folder row states that *Download all* includes
+subfolders, and a folder with files shows a *Download* button. The term clears on navigation, since
+each folder is a different list. Whatever is filtered out is also unselectable — a user cannot
+select a row they cannot see.
 
 The child-folder and file listings are fetched **in parallel**, and a file row does not wait for its
 type: Figma's listings never include `editorType`, so resolving one costs an API call per file.
@@ -140,6 +155,10 @@ download manager (see the Figma source of truth):
   the error state per the Figma source of truth. The **Clear** header button renders only while
   completed rows exist.
 
+Starting a download while rows from an earlier run are still listed **keeps anything that can still
+be acted on** (failed, stopped, partial, skipped) and its per-row *Retry*; only completed rows are
+dropped. Replacing the whole queue outright silently destroyed a failure the user had not seen yet.
+
 Items run **sequentially** (folders first, then files). Closing the popover never affects the run;
 Esc closes it and returns focus to the control that opened it. The popover is non-modal, so the rest
 of the app remains available while a backup runs. It holds a **400px minimum height** (clamped to
@@ -147,12 +166,35 @@ the available height) so it does not resize under the pointer when the first row
 
 ## Settings
 
-- The settings card starts directly below the top bar, with 4px top and bottom padding and no gap between rows. The last row has no bottom divider. Token storage notes are documented in the README rather than repeated in the screen.
+- The settings list starts directly below the top bar. It is a **two-column grid**
+  (`minmax(0,1fr) 15rem`) with a single 240px control column: every select, input and button
+  starts and ends on the same two edges whatever its intrinsic width, so a long label can never
+  shift a control out of alignment. Below the `sm` breakpoint the columns collapse to one and the
+  control goes full width, so nothing is ever clipped.
+- Rows are grouped into three sections — **Backups**, **App**, **Setup** — separated by **24px** of
+  space with **8px** between rows inside a section (the 2× ratio is what makes the grouping read as
+  structure rather than noise; there are no divider lines). Each group has a small uppercase
+  micro-heading. Every row carries a title, and a description wherever one helps, so no row is a bare
+  label.
+- The **access-token** field is forced `dir="ltr"` in every UI language: a token is always LTR, and
+  without it the placeholder renders mirrored (`…figd`) and the reveal button lands on the text.
+- The Donate card sits below the list at 24px, and the muted version line is the **last** element on
+  the screen — not stranded between the list and the card.
+- **One inset for the whole screen.** Group headings, row content and the Donate card all use the
+  same 12px inline padding, so their *text* lands on one edge even though the card also has a ring
+  on the outer column edge. Matching the box is not enough — a card padded 16px next to rows padded
+  12px reads as a different width even when both are exactly 664px wide.
+- **Backup location** — a short explanation of where single files land versus folder/team backups,
+  the resolved absolute path from `bootstrap().downloads` (monospace, selectable, so it can be
+  copied into a bug report), and an *Open Downloads* button. This is the only place the answer to
+  "where did my files go?" is given; the per-row *Show in folder* only exists after a run.
 - **Language** — English (default) / فارسی. Applies immediately, including direction.
 - **Appearance** — Light / Dark / Follow system.
 - **Access token** — replacing it reopens all three setup checks, since the saved browser session
   must still match the new token's access.
 - **Redo setup** — re-run all three checks; a saved token can be reverified without re-entering it.
+- A muted version line (`Fig Backup <version> · <platform>`, from `bootstrap().version`) closes the
+  screen, below the donate card.
 
 ## Design system
 

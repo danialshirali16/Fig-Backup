@@ -77,6 +77,20 @@ class EditorTypeClient:
         return 'figjam'
 
 
+class ForbiddenOnceBrowser(Browser):
+    """Refuses the first file the way Figma's editor does, then works."""
+
+    def __init__(self):
+        self.seen = 0
+
+    def download(self, file, index, progress):
+        self.seen += 1
+        if self.seen == 1:
+            raise FigmaError('Figma refused to open this file (HTTP 403).', 403)
+        progress('saving', 'Saving')
+        return {'status': 'saved', 'path': '/tmp/B.fig', 'size': 2048}
+
+
 class BridgeTests(unittest.TestCase):
     @staticmethod
     def make_bridge(browser):
@@ -501,3 +515,46 @@ class RequiredSetupTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class EditorForbiddenTests(unittest.TestCase):
+    """A 403 on one file must not abort the queue or reset the setup.
+
+    It used to raise BrowserAuthError, which set phase="attention" and routed
+    the UI into the wizard — and openWizard() calls begin_setup(), which wipes
+    onboarding_complete on disk. One inaccessible file cost the user their whole
+    completed setup.
+    """
+
+    def test_a_403_fails_only_that_file(self):
+        bridge = BridgeTests.make_bridge(ForbiddenOnceBrowser())
+        bridge.client = FigmaFilesClient()
+        with patch('figma_backup.app.TreeArchiveIndex'):
+            index = unittest.mock.MagicMock()
+            index.root = Path('/tmp/Fig Backup/Team')
+            index.folder_path.return_value = Path('/tmp/Fig Backup/Team')
+            index.target.return_value = (Path('/tmp/Fig Backup/Team/A.fig'), False)
+            with patch('figma_backup.app.TreeArchiveIndex', return_value=index):
+                bridge._run_download({'scope': 'folder', 'team': {'id': '10', 'name': 'Team'},
+                                      'folder': {'id': '44', 'name': 'Folder'}})
+        state = bridge.status()
+        self.assertEqual(state['phase'], 'done', 'the run must finish, not stop for attention')
+        self.assertEqual(state['failed'], 1)
+        self.assertEqual(state['saved'], 1, 'the other file must still be saved')
+
+    def test_a_403_row_offers_retry_instead_of_sign_in(self):
+        bridge = BridgeTests.make_bridge(ForbiddenOnceBrowser())
+        bridge.client = FigmaFilesClient()
+        with patch('figma_backup.app.TreeArchiveIndex'):
+            index = unittest.mock.MagicMock()
+            index.root = Path('/tmp/Fig Backup/Team')
+            index.folder_path.return_value = Path('/tmp/Fig Backup/Team')
+            index.target.return_value = (Path('/tmp/Fig Backup/Team/A.fig'), False)
+            with patch('figma_backup.app.TreeArchiveIndex', return_value=index):
+                bridge._run_download({'scope': 'folder', 'team': {'id': '10', 'name': 'Team'},
+                                      'folder': {'id': '44', 'name': 'Folder'}})
+        state = bridge.status()
+        self.assertNotEqual(state['phase'], 'attention', 'attention is what routes to the wizard')
+        failed = [item for item in state['items'] if item['status'] == 'failed']
+        self.assertEqual(len(failed), 1)
+        self.assertIn('403', failed[0]['detail'])

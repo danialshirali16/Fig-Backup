@@ -12,6 +12,23 @@ Fig Backup is open source and unsigned, so macOS warns on first launch:
 2. Or: System Settings → Privacy & Security → find the warning → **Open Anyway**.
 3. Terminal alternative: `xattr -dr com.apple.quarantine "/Applications/Fig Backup.app"`
 
+## macOS asks for permission to modify apps
+
+> **“Fig Backup.app” was prevented from modifying apps on your Mac.**
+
+This is a different prompt from the Gatekeeper warning above, and it is **not** a broken
+install — the app is already running. It is macOS's *App Management* permission, asked for the
+first time the app hands a file or a link to the system: **Open Downloads** and **Show in folder**
+in Settings open Finder, and *Open Figma settings* in the setup wizard opens your browser. macOS
+counts launching those as touching another app.
+
+**Fix:** System Settings → Privacy & Security → **App Management** → turn on **Fig Backup**. Or
+click **Manage** on the notification itself.
+
+It comes back on every new build when the app is signed ad-hoc, because macOS keys the permission
+on the code signature and a fresh ad-hoc signature reads as a brand-new app. Signing the build with
+a stable certificate — a self-signed one is enough for this — makes the permission stick.
+
 ## Windows: WebView2 or SmartScreen
 
 - `Fig Backup.exe` needs the **WebView2 runtime** (preinstalled on Windows 10/11). If the window

@@ -96,7 +96,12 @@ export function installPreviewBridge() {
   window.pywebview = {
     platform: fakeWindows ? 'edgechromium' : 'browser-preview',
     api: {
-      bootstrap: async () => ({ has_token: true, teams: previewTeams, preferences, browser: { ...browserState } }),
+      bootstrap: async () => ({
+        has_token: true, teams: previewTeams, preferences,
+        browser: { ...browserState },
+        downloads: '/Users/you/Downloads',
+        version: '0.3.0',
+      }),
       discover_teams: async () => lag().then(() => ({ teams: previewTeams, auth_required: false })),
       save_preferences: async changes => (preferences = { ...preferences, ...changes }),
       begin_setup: async () => {
