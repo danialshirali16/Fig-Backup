@@ -2,6 +2,16 @@ import { downloadFailureDescription } from './download-errors.js'
 
 export const DONE_STATES = ['saved', 'exists', 'renamed']
 
+/* Only successful rows can be discarded automatically. A stopped runner may
+   still have queued work, and unsuccessful rows keep their Retry action. */
+export function clearCompletedItems(queue) {
+  return queue.filter(item => item.status !== 'done')
+}
+
+export function appendDownloadItems(queue, items, running) {
+  return [...(running ? queue : clearCompletedItems(queue)), ...items]
+}
+
 /* What a finished run actually did, so a row caption never claims work that did
    not happen: 'exists' when every file was already on disk, 'renamed' when only
    a legacy name was migrated, 'saved' when at least one new copy was written. */

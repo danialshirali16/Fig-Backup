@@ -2,6 +2,7 @@ import json
 import stat
 import sys
 import tempfile
+import unicodedata
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -156,6 +157,38 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(client.subfolders('20'), [])
         self.assertIn('20', client.unavailable_subfolders)
         self.assertEqual(client.all_files({'id': '20'}), [])
+
+    def test_each_team_and_child_keeps_its_folder_api_during_other_team_browsing(self):
+        calls = []
+        responses = {
+            '/v2/teams/10/folders': Response(403, {'message': 'legacy access'}),
+            '/v1/teams/10/projects': Response(200, {'projects': [{'id': '20', 'name': 'Legacy'}]}),
+            '/v2/teams/11/folders': Response(200, {'folders': [{'id': '21', 'name': 'Modern'}]}),
+            '/v1/projects/20/files': Response(200, {'files': [{'key': 'legacy'}]}),
+            '/v2/folders/21/files': Response(200, {'files': [{'key': 'modern'}]}),
+            '/v2/folders/21/folders': Response(200, {'folders': [{'id': '22', 'name': 'Child'}]}),
+            '/v2/folders/22/files': Response(200, {'files': [{'key': 'child'}]}),
+            '/v2/folders/22/folders': Response(200, {'folders': []}),
+        }
+
+        def request(url, **_kwargs):
+            path = url.removeprefix('https://api.figma.com')
+            calls.append(path)
+            return responses[path]
+
+        client = FigmaClient('dummy', request)
+        legacy = client.top_folders('10')[0]
+        modern = client.top_folders('11')[0]
+        self.assertEqual(client.files(legacy['id']), [{'key': 'legacy'}])
+        self.assertEqual(client.subfolders(legacy['id']), [])
+        child = client.subfolders(modern['id'])[0]
+        client.top_folders('10')  # A queued v2 folder must survive a later v1 browse too.
+        self.assertEqual(client.files(modern['id']), [{'key': 'modern'}])
+        self.assertEqual(client.files(child['id']), [{'key': 'child'}])
+        self.assertEqual(client.subfolders(child['id']), [])
+        self.assertEqual(client.folder_api_for_team('10'), 'v1')
+        self.assertEqual(client.folder_api_for_team('11'), 'v2')
+        self.assertEqual(len(calls), 10, 'known folders should not need another team listing')
 
     def test_api_errors(self):
         client = FigmaClient('dummy', lambda *_args, **_kwargs: Response(403, {'message': 'forbidden'}))
@@ -396,3 +429,75 @@ class StaleExtensionRepairTests(unittest.TestCase):
             self.assertEqual(repaired.parent, seeded.parent, 'the folder must not change')
             stored = json.loads(paths.read_text(encoding='utf-8'))['files']['K']
             self.assertTrue(stored.endswith('Board.jam'), 'the repair must be persisted')
+
+
+class OverwriteOwnershipTests(unittest.TestCase):
+    def make_index(self, root, tree):
+        downloads, support = root / 'Downloads', root / 'Support'
+        downloads.mkdir()
+        file = {'key': 'new', 'name': 'Café', 'editorType': 'figma'}
+        if tree:
+            file['_folder_path'] = [{'id': '20', 'name': 'Folder'}]
+            index = TreeArchiveIndex({'id': '10', 'name': 'Team'}, support, downloads)
+            directory = index.folder_path(file['_folder_path'])
+        else:
+            index = ArchiveIndex(support, downloads)
+            directory = downloads
+        directory.mkdir(parents=True, exist_ok=True)
+        return index, file, directory
+
+    def seed_owners(self, index, destination, tree):
+        relative = destination.relative_to(index.root).as_posix() if tree else destination.name
+        owners = {'old': relative, 'duplicate': unicodedata.normalize('NFD', relative).upper(),
+                  'other': relative.replace('Café.fig', 'Other.fig')}
+        if tree:
+            index.files = owners
+            index._save()
+        else:
+            index.names = owners
+            index.path.parent.mkdir(parents=True, exist_ok=True)
+            index.path.write_text(json.dumps({'version': 1, 'files': owners}), encoding='utf-8')
+        return owners
+
+    def test_overwrite_reserves_nothing_until_success_and_transfers_all_matching_owners(self):
+        for tree in (False, True):
+            with self.subTest(tree=tree), tempfile.TemporaryDirectory() as temporary:
+                index, file, directory = self.make_index(Path(temporary), tree)
+                destination = directory / 'Café.fig'
+                destination.write_bytes(b'old' * 1024)
+                owners = self.seed_owners(index, destination, tree)
+                before = index.path.read_bytes()
+                legacy = directory / 'Café--new.fig'
+                legacy.write_bytes(b'legacy' * 1024)
+
+                wanted, migrated = index.target(file, overwrite=True)
+                self.assertEqual(wanted, destination)
+                self.assertFalse(migrated)
+                self.assertEqual(index.path.read_bytes(), before)
+                self.assertEqual(index.files if tree else index.names, owners)
+                self.assertEqual(destination.read_bytes(), b'old' * 1024)
+                self.assertTrue(legacy.exists(), 'planning overwrite cannot consume the legacy copy')
+
+                destination.write_bytes(b'new' * 1024)  # The verified browser save succeeded.
+                index.commit_overwrite(file, destination)
+                mappings = index.files if tree else index.names
+                self.assertEqual(set(mappings), {'new', 'other'})
+                reloaded = (TreeArchiveIndex({'id': '10', 'name': 'Team'}, Path(temporary) / 'Support',
+                                             Path(temporary) / 'Downloads') if tree else
+                            ArchiveIndex(Path(temporary) / 'Support', Path(temporary) / 'Downloads'))
+                self.assertEqual(reloaded.files if tree else reloaded.names, mappings)
+                self.assertIsNotNone(index.plan({**file, 'key': 'old'})[1],
+                                     'the old key must no longer claim the replacement as its own copy')
+
+    def test_failed_overwrite_index_commit_leaves_memory_and_disk_unchanged(self):
+        for tree in (False, True):
+            with self.subTest(tree=tree), tempfile.TemporaryDirectory() as temporary:
+                index, file, directory = self.make_index(Path(temporary), tree)
+                destination = directory / 'Café.fig'
+                owners = self.seed_owners(index, destination, tree)
+                before = index.path.read_bytes()
+                with patch('figma_backup.core.write_json', side_effect=OSError('disk full')):
+                    with self.assertRaisesRegex(OSError, 'disk full'):
+                        index.commit_overwrite(file, destination)
+                self.assertEqual(index.files if tree else index.names, owners)
+                self.assertEqual(index.path.read_bytes(), before)

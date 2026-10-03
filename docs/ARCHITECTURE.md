@@ -46,7 +46,9 @@ UI as a sequential queue of per-item `start_download` calls (see “Backup queue
 ## Figma client (`core.py`)
 
 - **Folder API strategy**: try v2 `folders`; on 403/404 fall back to legacy v1 `projects`, and
-  remember the choice per client (`folder_api`). Subfolder listing may return HTTP 451
+  remember the choice per team and discovered folder. Child folders inherit v2; browsing another
+  team cannot change the API used for a folder already in the backup queue. `folder_api` remains
+  the last listing's mode for compatibility. Subfolder listing may return HTTP 451
   (region/policy restriction); the client records the folder in `unavailable_subfolders` and the UI
   warns the backup may be incomplete.
 - **Retries**: a dropped connection or a read timeout is retried twice with a short backoff
@@ -90,16 +92,21 @@ UI as a sequential queue of per-item `start_download` calls (see “Backup queue
   sessions survive restarts without touching the user's normal browser profile. Browser work is
   headless except for one-time sign-in initiated by the user. That window closes when setup ends.
   If a system browser fails to launch or crashes, try the
-  next installed browser, then bundled Chromium.
+  next installed browser, then bundled Chromium. The successful recovery channel stays selected
+  for sign-in, verification and retry, so the user authenticates the same persistent profile
+  that the backup will use. Crashed system channels stay excluded for the current Browser instance.
 - **Fallback install**: Chromium and its headless shell are not bundled. `chromium_ready()` checks
-  the pinned revision, executable, and `INSTALLATION_COMPLETE` marker for both builds; `bootstrap()` submits
+  the pinned revision, executable, and `INSTALLATION_COMPLETE` marker for both builds, including
+  executable permissions on Unix; `bootstrap()` submits
   the install proactively only when no system browser and no complete fallback are available,
   exposed as a separate `browser` state dict
   (`ready | missing | setting_up | failed` — separate from the download state because
   `start_download` replaces that dict). `Browser.open()` keeps its own lazy install as the safety
   net. The installer reuses complete caches, repairs the earlier headless-shell cache name,
   and falls back to `playwright install` when mirrors fail. Subprocesses pass
-  `CREATE_NO_WINDOW` on Windows so the windowed exe never flashes a console.
+  `CREATE_NO_WINDOW` on Windows so the windowed exe never flashes a console. ZIP extraction preserves
+  Unix executable modes and symlinks, validates archive paths and link targets, and publishes the
+  completed cache only after validation. Incomplete or non-executable caches are reinstalled.
 - Headless runs set a real Chrome user agent (derived from the active browser version) and
   neutralize `navigator.webdriver`.
 - **Save local copy** flow: keyboard shortcut `Cmd+/` → quick-action search → “save local copy”;
@@ -120,8 +127,14 @@ UI as a sequential queue of per-item `start_download` calls (see “Backup queue
 `plan()` on both indexes reports the name a file would naturally take and whatever already
 occupies it, without writing anything; that is how a clash is spotted before a single byte moves.
 `_run_download` pauses on one, and `resolve_conflict()` records the answer and re-enters the loop at
-the stored position — the run context (`selection`, `position`, `decisions`) lives on the Bridge,
-so a paused run resumes instead of restarting.
+the stored position. The Bridge retains the initial file listing, archive, client, destination,
+warnings and decisions, so resuming never re-fetches a changed listing or resets previous results.
+Cancel is tied to the stable file key as well as the resume position.
+
+For Overwrite, `target(overwrite=True)` only chooses the path; it does not claim ownership or move
+a legacy copy. The Browser downloads and validates a staged copy before replacing the destination,
+then `commit_overwrite()` transfers index ownership and removes old keys claiming that path.
+If saving or committing the index fails, the original backup and its ownership are preserved.
 
 Both archive indexes are keyed by file key and remember the path they chose, so a repeat backup
 skips the browser entirely. That memory outlives an editor-format change, so `target()` repairs an
@@ -166,9 +179,10 @@ Replacing a previously verified token invalidates completion and starts the wiza
 - **Select mode** is explicit: the toolbar *Select* button swaps per-row actions for checkboxes
   (folder navigation moves to an explicit “Open” chevron so a click never does two things).
   *Done* or **Esc** exits and returns focus to the Select button.
-- **Select-all** is a tri-state checkbox (`aria-checked="mixed"`): at a folder level it covers
-  that folder’s visible subfolders + loose files; at the team root it covers the whole team.
-  Partial selection shows the indeterminate dash.
+- **Select-all** is a tri-state checkbox (`aria-checked="mixed"`): it covers only folders and
+  files visible after applying the current search, preserving selections outside that visible slice.
+  The checkbox and visible count use the same filtered listing. Partial selection shows the
+  indeterminate dash.
 
 ### Backup queue
 
@@ -180,6 +194,9 @@ files is skipped; a run with both saved and skipped files is partial. A failure 
 message mentions sign-in marks the item failed with “Sign-in required”, stops the loop, and routes
 to the wizard sign-in step; the download manager offers **Retry & continue**. Per-item *Retry*, *Cancel
 remaining*, and *Stop after current* are available in the popover.
+
+Adding a new batch after stopping keeps queued and retryable rows ahead of the new work. Clear
+removes only successful `done` rows; failures and stopped rows keep their Retry action.
 
 The **download manager popover** in the top bar shows the live run (progress ring, honest percent —
 skipped/failed items are not counted as done — and current file), followed by one row per queue
@@ -230,3 +247,8 @@ header moves the window.
 archive naming/collisions, legacy fallback, 451 handling, queue totals, browser-retry path) with
 mocked API/browser doubles. `tests/test_app.py` additionally imports Playwright, so it needs the
 project venv.
+
+`tests/test_backup_integrity.py` exercises conflict decisions through the real Bridge, Browser and
+disk indexes with only the editor download mocked. Installer tests cover Unix ZIP modes and
+symlinks with portable mocks. `npm run test:node` covers queue retention, filtered selection and
+complete setup retries, as well as result summaries, errors and translation parity.

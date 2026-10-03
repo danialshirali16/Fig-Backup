@@ -11,6 +11,21 @@ binaries for every version below match the tag exactly.
 
 Nothing yet.
 
+## [1.0.1] — 2026-10-03
+
+### Fixed
+
+- Overwrite now saves the requested file and transfers archive ownership only after a verified
+  save; failed replacements preserve the previous backup and its index entry.
+- Chromium installation preserves executable permissions and symlinks on macOS and repairs
+  non-executable caches. Browser crash recovery keeps sign-in and retries on the same fallback
+  profile.
+- Resuming a file-name conflict keeps the initial file listing and completed results. Browsing
+  another team no longer changes the API used by an active or queued folder backup.
+- Select all respects the current search. Adding work after stopping preserves pending downloads,
+  and Clear preserves failed and stopped rows with their Retry actions.
+- Retrying setup also completes the screen transition and closes the sign-in window when needed.
+
 ## [1.0.0] — 2026-09-26
 
 The first stable release. The Chromium downloader and the setup flow were reworked, file-name
@@ -87,7 +102,8 @@ First public release.
   `name(1).fig` naming.
 - Light, dark, and system themes, right-to-left layout support, and reduced-motion support.
 
-[Unreleased]: https://github.com/danialshirali16/Fig-Backup/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/danialshirali16/Fig-Backup/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/danialshirali16/Fig-Backup/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/danialshirali16/Fig-Backup/compare/v0.3.0...v1.0.0
 [0.3.0]: https://github.com/danialshirali16/Fig-Backup/compare/v0.2.0...v0.3.0
 [0.2.1-rc.1]: https://github.com/danialshirali16/Fig-Backup/compare/v0.2.0...v0.2.1-rc.1

@@ -16,7 +16,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Toaster } from '@/components/ui/sonner'
 import { translate, LANGUAGES, RTL_LANGUAGES } from './i18n'
 import { describeApiError } from './api-errors'
-import { DONE_STATES, queueProgressPercent, summarizeDownloadRun } from './download-queue'
+import { appendDownloadItems, clearCompletedItems, DONE_STATES, queueProgressPercent, summarizeDownloadRun } from './download-queue'
+import { toggleVisibleSelection, visibleSelectionState } from './selection'
+import { openSetupStep } from './setup-workflow'
 import { flyToQueue, cancelAllFlights } from './fly-to-queue'
 import iconFileDesign from './assets/figma-file-design.png'
 import donateQr from './assets/donate-qr.png'
@@ -530,27 +532,18 @@ function App() {
   }
 
   async function openWizard(step) {
-    if (step === 'browser' && view !== 'wizard') {
-      let opened = false
-      await call('setup-begin', async () => {
-        const reset = await api.begin_setup()
-        setPreferences(reset.preferences)
-        setVerifiedName('')
-        opened = true
-      })
-      if (!opened) return
+    const beginSetup = step === 'browser' && view !== 'wizard'
+    const action = () => openSetupStep({
+      api, step, view, loginOpen,
+      onReset: prefs => { setPreferences(prefs); setVerifiedName('') },
+      onLoginClosed: () => setLoginOpen(false),
+      onOpen: nextStep => { setWizardStep(nextStep); setView('wizard') },
+    })
+    if (beginSetup || (loginOpen && step !== 'signin')) {
+      await call(beginSetup ? 'setup-begin' : 'sign-in-close', action)
+    } else {
+      await action()
     }
-    if (loginOpen && step !== 'signin') {
-      let closed = false
-      await call('sign-in-close', async () => {
-        await api.close_sign_in()
-        closed = true
-      })
-      if (!closed) return
-      setLoginOpen(false)
-    }
-    setWizardStep(step)
-    setView('wizard')
   }
 
   async function chooseTeam(value) {
@@ -615,26 +608,14 @@ function App() {
       files: fileSelected(f.key) ? cur.files.filter(x => x.key !== f.key) : [...cur.files, { key: f.key, name: f.name, folder, editorType: f.editorType }],
     }))
   }
-  const visibleAllSelected = (folders.length + files.length > 0) && folders.every(f => folderSelected(f.id)) && files.every(f => fileSelected(f.key))
-  const visibleSomeSelected = folders.some(f => folderSelected(f.id)) || files.some(f => fileSelected(f.key))
-  const allState = visibleAllSelected ? 'on' : visibleSomeSelected ? 'half' : 'off'
-  /* The selection store is per team and survives navigation, so selCount can
-     exceed what is on screen. Count the visible slice for the position readout
-     and report the rest separately instead of mixing the two. */
-  const visibleSelected = folders.filter(f => folderSelected(f.id)).length + files.filter(f => fileSelected(f.key)).length
-  const selectedElsewhere = selCount - visibleSelected
+  const visibleSelection = visibleSelectionState(teamSel, sortedFolders, sortedFiles)
+  /* Count the filtered rows on screen. The other-folder notice uses the full
+     current listing so hidden search matches are not called another folder. */
+  const visibleSelected = visibleSelection.selected
+  const selectedInFolder = folders.filter(f => folderSelected(f.id)).length + files.filter(f => fileSelected(f.key)).length
+  const selectedElsewhere = selCount - selectedInFolder
   function onSelectAll() {
-    if (visibleAllSelected) {
-      updateSelection(cur => ({
-        folders: cur.folders.filter(f => !folders.some(v => v.id === f.id)),
-        files: cur.files.filter(f => !files.some(v => v.key === f.key)),
-      }))
-    } else {
-      updateSelection(cur => ({
-        folders: [...cur.folders.filter(f => !folders.some(v => v.id === f.id)), ...folders],
-        files: [...cur.files.filter(f => !files.some(v => v.key === f.key)), ...files.map(f => ({ key: f.key, name: f.name, folder, editorType: f.editorType }))],
-      }))
-    }
+    updateSelection(cur => toggleVisibleSelection(cur, sortedFolders, sortedFiles, folder))
   }
   function clearSelection() { updateSelection(() => ({ folders: [], files: [] })) }
   function exitSelectMode() { setSelectMode(false); selectBtnRef.current?.focus() }
@@ -736,12 +717,7 @@ function App() {
     }
   }
   function enqueueItems(items, showDetails = true) {
-    changeQueue(current => {
-      if (queueRunnerRef.current) return [...current, ...items]
-      // A finished-but-actionable row carries a Retry the user may still want.
-      // Replacing the queue outright used to drop it without a word.
-      return [...current.filter(item => RETRYABLE_STATES.includes(item.status)), ...items]
-    })
+    changeQueue(current => appendDownloadItems(current, items, queueRunnerRef.current))
     if (showDetails) setQueueOpen(true)
     void runQueue()
   }
@@ -777,7 +753,7 @@ function App() {
     void runQueue()
   }
   function clearFinished() {
-    changeQueue(q => q.filter(it => !['done', 'stopped', 'failed'].includes(it.status)))
+    changeQueue(clearCompletedItems)
   }
   async function stopCurrent() {
     stopAfterCurrentRef.current = true
@@ -1493,9 +1469,9 @@ function App() {
             <div className="w-full">
             {inSelect && (
               <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border border-primary/25 bg-primary/5 px-3 py-2">
-                <Checkbox checked={allState === 'half' ? 'indeterminate' : allState === 'on'} onCheckedChange={onSelectAll} aria-label={t('selectAll')} />
+                <Checkbox checked={visibleSelection.checked} onCheckedChange={onSelectAll} aria-label={t('selectAll')} />
                 <span className="text-xs font-semibold tabular-nums text-muted-foreground" role="status">
-                  {t('ofSelected', { count: visibleSelected, total: folders.length + files.length })}
+                  {t('ofSelected', { count: visibleSelected, total: visibleSelection.total })}
                 </span>
                 {selectedElsewhere > 0 && (
                   <span className="text-xs text-muted-foreground">

@@ -1,6 +1,8 @@
 import io
 import json
 import platform
+import os
+import stat
 import sys
 import tempfile
 import unittest
@@ -28,6 +30,7 @@ def complete_layout(browser_dir: Path, name: str = 'chromium') -> None:
     binary = browser_dir / binary_relative(name)
     binary.parent.mkdir(parents=True)
     binary.write_text('', encoding='utf-8')
+    binary.chmod(0o755)
 
 
 class ChromiumReadyTests(unittest.TestCase):
@@ -65,6 +68,12 @@ class ChromiumReadyTests(unittest.TestCase):
         cache = self.make_cache(marker=True, binary=True)
         with patch.object(Browser, '_manifest_entry', side_effect=lambda name: {'revision': 'new', 'browserVersion': '153.0.8010.12'}):
             self.assertFalse(chromium_ready(cache))
+
+    def test_mac_marker_without_execute_permission_is_not_ready(self):
+        with patch.object(browser_module.sys, 'platform', 'darwin'), \
+             patch.object(browser_module.platform, 'machine', return_value='arm64'), \
+             patch.object(browser_module.os, 'access', return_value=False):
+            self.assertFalse(chromium_ready(self.make_cache(marker=True, binary=True)))
 
 
 class SystemBrowserTests(unittest.TestCase):
@@ -163,6 +172,97 @@ class SystemBrowserTests(unittest.TestCase):
             self.assertTrue(browser.verify_sign_in())
         close.assert_called_once_with()
         open_browser.assert_called_once_with(headless=True)
+
+    def test_crash_fallback_sign_in_verification_and_retry_keep_edge_profile(self):
+        sessions = set()
+        launches = []
+
+        class Page:
+            def __init__(self, profile):
+                self.profile = profile
+
+            def goto(self, *_args, **_kwargs):
+                pass
+
+            def wait_for_function(self, *_args, **_kwargs):
+                if self.profile not in sessions:
+                    raise browser_module.PlaywrightTimeout('not signed in')
+
+        class Context:
+            def __init__(self, profile):
+                self.pages = [Page(profile)]
+
+            def add_init_script(self, _):
+                pass
+
+            def close(self):
+                pass
+
+        def launch(profile, **options):
+            launches.append((options.get('channel'), options['headless']))
+            return Context(Path(profile).name)
+
+        engine = SimpleNamespace(chromium=SimpleNamespace(
+            executable_path='unused', launch_persistent_context=launch), stop=lambda: None)
+        with tempfile.TemporaryDirectory() as directory:
+            browser = Browser(Path(directory))
+            browser.playwright = engine
+            with patch.object(Browser, 'system_browsers', return_value=[
+                    ('chrome', Path('chrome')), ('msedge', Path('edge'))]), \
+                 patch.object(Browser, '_headless_user_agent', return_value='Test agent'), \
+                 patch.object(browser_module, 'sync_playwright', return_value=SimpleNamespace(start=lambda: engine)), \
+                 patch.object(browser, '_collect_teams', return_value=[{'id': '1', 'name': 'Team'}]):
+                browser.open_sign_in()
+                sessions.add(browser.page.profile)
+                self.assertTrue(browser.verify_sign_in())
+                browser.recover_from_crash()
+                browser.open(headless=True)
+                self.assertFalse(browser.verify_sign_in())
+                browser.open_sign_in()
+                self.assertEqual(browser.page.profile, 'chromium-profile-msedge')
+                sessions.add(browser.page.profile)
+                self.assertTrue(browser.verify_sign_in())
+                browser.close()
+                browser.open(headless=True)
+                self.assertEqual(browser.page.profile, 'chromium-profile-msedge')
+        self.assertEqual(launches, [('chrome', False), ('chrome', True), ('msedge', True),
+                                   ('msedge', False), ('msedge', True), ('msedge', True)])
+
+    def test_crash_fallback_to_bundled_keeps_its_sign_in_profile(self):
+        launches = []
+
+        class Context:
+            pages = [SimpleNamespace(goto=lambda *_args, **_kwargs: None)]
+
+            def add_init_script(self, _):
+                pass
+
+            def close(self):
+                pass
+
+        def launch(profile, **options):
+            launches.append((Path(profile).name, options.get('channel'), options['headless']))
+            return Context()
+
+        engine = SimpleNamespace(chromium=SimpleNamespace(
+            executable_path='unused', launch_persistent_context=launch), stop=lambda: None)
+        with tempfile.TemporaryDirectory() as directory:
+            browser = Browser(Path(directory))
+            browser.playwright = engine
+            with patch.object(Browser, 'system_browsers', return_value=[('chrome', Path('chrome'))]), \
+                 patch.object(Browser, '_headless_user_agent', return_value='Test agent'), \
+                 patch.object(browser_module, 'chromium_ready', return_value=True), \
+                 patch.object(browser_module, 'sync_playwright', return_value=SimpleNamespace(start=lambda: engine)):
+                browser.open()
+                browser.recover_from_crash()
+                browser.open()
+                browser.open_sign_in()
+                browser.close_sign_in()
+                browser.open()
+        self.assertEqual(launches, [('chromium-profile-chrome', 'chrome', True),
+                                   ('chromium-profile', 'chromium', True),
+                                   ('chromium-profile', 'chromium', False),
+                                   ('chromium-profile', 'chromium', True)])
 
     def check_launch(self, failures, expected, channels):
         class Context:
@@ -295,8 +395,11 @@ class FallbackSourceTests(unittest.TestCase):
     def test_install_reports_byte_progress(self):
         buffer = io.BytesIO()
         with zipfile.ZipFile(buffer, 'w') as bundle:
-            bundle.writestr(binary_relative('chromium').as_posix(), 'binary')
-            bundle.writestr(binary_relative('chromium-headless-shell').as_posix(), 'binary')
+            for name in ('chromium', 'chromium-headless-shell'):
+                entry = zipfile.ZipInfo(binary_relative(name).as_posix())
+                entry.create_system = 3
+                entry.external_attr = (stat.S_IFREG | 0o755) << 16
+                bundle.writestr(entry, 'binary')
         payload = buffer.getvalue()
 
         def fake_segment(url, start, end, part, on_bytes=None, attempts=10):
@@ -342,6 +445,104 @@ class FallbackSourceTests(unittest.TestCase):
             part = Path(directory) / 'part'
             Browser._fetch_segment('https://example.com/archive', 0, 3, part, attempts=1)
             self.assertEqual(part.read_bytes(), b'abcd')
+
+
+class BrowserArchiveTests(unittest.TestCase):
+    def unix_archive(self):
+        payload = io.BytesIO()
+        with zipfile.ZipFile(payload, 'w') as archive:
+            for name, mode, body in (
+                    ('chrome-mac-arm64/Chrome.app/Contents/MacOS/Chrome', stat.S_IFREG | 0o755, b'new'),
+                    ('chrome-mac-arm64/Chrome.app/Contents/Frameworks/Versions/A/binary', stat.S_IFREG | 0o755, b'framework'),
+                    ('chrome-mac-arm64/Chrome.app/Contents/Frameworks/Versions/Current', stat.S_IFLNK | 0o777, b'A')):
+                entry = zipfile.ZipInfo(name)
+                entry.create_system = 3
+                entry.external_attr = mode << 16
+                archive.writestr(entry, body)
+        payload.seek(0)
+        return payload
+
+    def test_mac_extraction_preserves_executable_modes_and_symlinks(self):
+        original_chmod = Path.chmod
+        original_symlink = os.symlink
+
+        def link(target, path):
+            if os.name == 'nt':
+                # Windows developer machines may lack permission to create links.
+                Path(path).write_text(target, encoding='utf-8')
+            else:
+                original_symlink(target, path)
+
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / 'browser'
+            with zipfile.ZipFile(self.unix_archive()) as archive, \
+                 patch.object(browser_module.sys, 'platform', 'darwin'), \
+                 patch.object(Path, 'chmod', autospec=True, side_effect=original_chmod) as chmod, \
+                 patch.object(browser_module.os, 'symlink', side_effect=link) as symlink:
+                Browser._extract_browser_archive(archive, destination)
+            binary = destination / 'chrome-mac-arm64/Chrome.app/Contents/MacOS/Chrome'
+            current = destination / 'chrome-mac-arm64/Chrome.app/Contents/Frameworks/Versions/Current'
+            chmod.assert_any_call(binary, 0o755)
+            symlink.assert_called_once_with('A', current)
+            if os.name != 'nt':
+                self.assertTrue(os.access(binary, os.X_OK))
+                self.assertTrue(current.is_symlink())
+                self.assertEqual((current / 'binary').read_bytes(), b'framework')
+
+    def test_mac_install_replaces_old_non_executable_cache_tree(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cache = Path(directory)
+            dest = cache / 'chromium-1243'
+            binary = dest / 'chrome-mac-arm64/Chrome.app/Contents/MacOS/Chrome'
+            binary.parent.mkdir(parents=True)
+            binary.write_bytes(b'old')
+            (dest / 'INSTALLATION_COMPLETE').touch()
+            stale = dest / 'flattened-old-symlink'
+            stale.write_bytes(b'old')
+            payload = self.unix_archive().getvalue()
+
+            def download(_url, path, _progress):
+                path.write_bytes(payload)
+
+            with patch.object(browser_module.sys, 'platform', 'darwin'), \
+                 patch.object(browser_module.platform, 'machine', return_value='arm64'), \
+                 patch.object(Browser, 'browser_cache_dir', return_value=cache), \
+                 patch.object(Browser, '_manifest_entry', return_value={'revision': '1243', 'browserVersion': '153.0.8010.12'}), \
+                 patch.object(Browser, '_download', side_effect=download), \
+                 patch.object(browser_module.os, 'access', side_effect=lambda path, _: path.read_bytes() == b'new'), \
+                 patch.object(browser_module.os, 'symlink', side_effect=lambda target, path: Path(path).write_text(target)):
+                self.assertFalse(Browser._browser_installed('chromium', dest))
+                Browser._ensure_browser('https://example.invalid', 'chromium')
+                self.assertTrue(Browser._browser_installed('chromium', dest))
+            self.assertEqual(binary.read_bytes(), b'new')
+            self.assertFalse(stale.exists())
+
+    def test_archive_rejects_traversal_and_absolute_paths(self):
+        for filename in ('../outside', '/outside', 'C:/outside', 'chrome/../../outside'):
+            with self.subTest(filename=filename), tempfile.TemporaryDirectory() as directory:
+                payload = io.BytesIO()
+                with zipfile.ZipFile(payload, 'w') as archive:
+                    archive.writestr(filename, b'bad')
+                payload.seek(0)
+                with zipfile.ZipFile(payload) as archive:
+                    with self.assertRaisesRegex(RuntimeError, 'unsafe browser archive path'):
+                        Browser._extract_browser_archive(archive, Path(directory) / 'browser')
+                self.assertFalse((Path(directory) / 'outside').exists())
+
+    def test_archive_rejects_symlink_outside_staging_tree(self):
+        payload = io.BytesIO()
+        with zipfile.ZipFile(payload, 'w') as archive:
+            entry = zipfile.ZipInfo('chrome/link')
+            entry.create_system = 3
+            entry.external_attr = (stat.S_IFLNK | 0o777) << 16
+            archive.writestr(entry, '../../outside')
+        payload.seek(0)
+        with tempfile.TemporaryDirectory() as directory, zipfile.ZipFile(payload) as archive, \
+             patch.object(browser_module.sys, 'platform', 'darwin'), \
+             patch.object(browser_module.os, 'symlink') as symlink:
+            with self.assertRaisesRegex(RuntimeError, 'unsafe browser archive symlink'):
+                Browser._extract_browser_archive(archive, Path(directory) / 'browser')
+            symlink.assert_not_called()
 
 
 if __name__ == '__main__':

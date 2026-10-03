@@ -804,3 +804,84 @@ class FileConflictTests(unittest.TestCase):
             self.assertEqual(
                 replaced.target({'key': 'k2', 'name': 'A', 'editorType': 'figma'}, overwrite=True)[0].name,
                 'A.fig', 'overwrite claims the name that is already there')
+
+
+class ConflictSnapshotTests(unittest.TestCase):
+    def make_run(self, root, conflicts):
+        class ChangingClient(Client):
+            def __init__(self):
+                self.scans = 0
+                self.unavailable_subfolders = set()
+
+            def walk_tree(self, roots):
+                self.scans += 1
+                self.unavailable_subfolders.add('44')
+                keys = ['a', 'b', 'c'] if self.scans == 1 else ['a', 'c', 'b', 'new']
+                return ([{'key': key, 'name': key.upper(), 'editorType': 'figma', '_folder_path': roots}
+                         for key in keys], [roots])
+
+        class RecordingBrowser(Browser):
+            def __init__(self):
+                self.calls = []
+                self.archives = []
+
+            def download(self, file, archive, progress, overwrite=False):
+                self.calls.append((file['key'], overwrite))
+                self.archives.append(archive)
+                return {'status': 'saved', 'path': str(archive.root / (file['key'] + '.fig'))}
+
+        selection = {'scope': 'folder', 'team': {'id': '10', 'name': 'Team'},
+                     'folder': {'id': '44', 'name': 'Folder'}}
+        archive = TreeArchiveIndex(selection['team'], root / 'Support', root / 'Downloads')
+        directory = archive.folder_path([selection['folder']])
+        directory.mkdir(parents=True)
+        for key in conflicts:
+            (directory / (key.upper() + '.fig')).write_bytes(b'x' * 2048)
+        bridge = BridgeTests.make_bridge(RecordingBrowser())
+        bridge.client = ChangingClient()
+        bridge._run = None
+        bridge.executor = unittest.mock.MagicMock()
+        return bridge, selection, archive
+
+    def resume(self, bridge, choice):
+        bridge.resolve_conflict(choice)
+        call = bridge.executor.submit.call_args
+        call.args[0](*call.args[1:], **call.kwargs)
+
+    def test_cancel_after_a_saved_file_keeps_initial_listing_and_warning(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            bridge, selection, archive = self.make_run(Path(temporary), ['b'])
+            with patch('figma_backup.app.TreeArchiveIndex', return_value=archive) as factory:
+                bridge._run_download(selection)
+                self.assertEqual(bridge.status()['conflict']['key'], 'b')
+                destination = bridge.status()['destination']
+                bridge.client.unavailable_subfolders.clear()  # An unrelated browse changed client state.
+                self.resume(bridge, 'cancel')
+            state = bridge.status()
+            self.assertEqual(bridge.client.scans, 1, 'resuming cannot refetch or reorder the initial listing')
+            factory.assert_called_once()
+            self.assertEqual(bridge.browser.calls, [('a', False), ('c', False)])
+            self.assertEqual([row['status'] for row in state['items']], ['saved', 'skipped', 'saved'])
+            self.assertEqual((state['saved'], state['skipped'], state['total']), (2, 1, 3))
+            self.assertEqual(state['phase'], 'done')
+            self.assertEqual(state['destination'], destination)
+            self.assertIn('1 folder(s)', state['warning'])
+            self.assertTrue(all(value is archive for value in bridge.browser.archives))
+
+    def test_first_position_overwrite_and_later_cancel_reuse_the_run(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            bridge, selection, archive = self.make_run(Path(temporary), ['a', 'b'])
+            with patch('figma_backup.app.TreeArchiveIndex', return_value=archive):
+                bridge._run_download(selection)
+                rows = bridge.state['items']
+                self.assertEqual(bridge.status()['conflict']['key'], 'a')
+                self.resume(bridge, 'overwrite')
+                self.assertEqual(bridge.status()['conflict']['key'], 'b')
+                self.assertIs(bridge.state['items'], rows, 'position zero is a resume, not a new run')
+                self.resume(bridge, 'cancel')
+            state = bridge.status()
+            self.assertEqual(bridge.client.scans, 1)
+            self.assertEqual(bridge.browser.calls, [('a', True), ('c', False)])
+            self.assertEqual((state['saved'], state['skipped']), (2, 1))
+            self.assertEqual([row['status'] for row in state['items']], ['saved', 'skipped', 'saved'])
+            self.assertTrue(state['finished'])

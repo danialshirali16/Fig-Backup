@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { queueProgressPercent, runOutcome, summarizeDownloadRun } from '../src/download-queue.js'
+import { appendDownloadItems, clearCompletedItems, queueProgressPercent, runOutcome, summarizeDownloadRun } from '../src/download-queue.js'
 
 const translate = (key, values) => ({
   queueEmpty: 'No supported files were found.',
@@ -9,6 +9,31 @@ const translate = (key, values) => ({
   progressCountOne: `${values?.done} of ${values?.total} file`,
   downloadFailureFallback: 'Download failed.',
 })[key]
+
+test('adding work after stopping keeps the pending queue ahead of the new download', () => {
+  const stopped = { id: 'a', status: 'stopped', filesDone: 1, filesTotal: 3 }
+  const pending = { id: 'b', status: 'queued' }
+  const completed = { id: 'old', status: 'done' }
+  const next = { id: 'c', status: 'queued' }
+  const queue = [completed, stopped, pending]
+  assert.deepEqual(appendDownloadItems(queue, [next], false), [stopped, pending, next])
+  assert.deepEqual(queue, [completed, stopped, pending], 'adding work does not mutate the previous queue')
+})
+
+test('Clear and a new idle batch preserve all unresolved download rows', () => {
+  const statuses = ['done', 'failed', 'stopped', 'partial', 'skipped', 'queued', 'running', 'conflict']
+  const queue = statuses.map((status, id) => ({ id, status }))
+  const unresolved = queue.slice(1)
+  assert.deepEqual(clearCompletedItems(queue), unresolved)
+  const next = { id: 'new', status: 'queued' }
+  assert.deepEqual(appendDownloadItems(queue, [next], false), [...unresolved, next])
+})
+
+test('adding work to an active run keeps its completed rows and execution order', () => {
+  const queue = [{ id: 'a', status: 'done' }, { id: 'b', status: 'running' }, { id: 'c', status: 'queued' }]
+  const next = [{ id: 'd', status: 'queued' }]
+  assert.deepEqual(appendDownloadItems(queue, next, true), [...queue, ...next])
+})
 
 test('all skipped files leave the queue item skipped and progress at zero', () => {
   const run = {

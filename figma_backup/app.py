@@ -155,7 +155,7 @@ class Bridge:
         return {"has_token": bool(self.token), "downloads": str(DOWNLOADS),
                 "teams": read_json(SUPPORT / "teams.json", []),
                 "preferences": self.preferences_store.load(),
-                "browser": self._browser_status(), "version": "1.0.0"}
+                "browser": self._browser_status(), "version": "1.0.1"}
 
     def install_browser(self) -> dict:
         with self.lock:
@@ -268,7 +268,7 @@ class Bridge:
     def folders(self, team_id: str) -> dict:
         client = self._required()
         folders = client.top_folders(team_id)
-        return {"folders": folders, "legacy": client.folder_api == "v1"}
+        return {"folders": folders, "legacy": client.folder_api_for_team(team_id) == "v1"}
 
     def subfolders(self, folder_id: str) -> dict:
         client = self._required()
@@ -386,33 +386,48 @@ class Bridge:
         stopped on a file conflict resumes exactly where it left off instead of
         restarting and re-fetching everything ahead of it.
         """
-        client = self._required()
-        decisions = decisions or {}
         try:
-            client.unavailable_subfolders.clear()
-            scope = selection["scope"]
-            team = selection["team"]
-            if scope == "file":
-                files = [item for item in client.files(selection["folder"]["id"])
-                         if item.get("key") == selection["file_key"]]
-                if not files:
-                    raise FigmaError("The selected file was not found in this folder")
-                archive = ArchiveIndex()
-                destination = str(DOWNLOADS)
+            run = getattr(self, "_run", None)
+            if run and run["selection"] == selection and "files" in run:
+                client, files, archive = run["client"], run["files"], run["archive"]
+                decisions = dict(decisions if decisions is not None else run["decisions"])
             else:
-                roots = client.top_folders(team["id"]) if scope == "team" else [selection["folder"]]
-                files, folder_paths = client.walk_tree(roots)
-                archive = TreeArchiveIndex(team)
-                archive.prepare_folders(folder_paths)
-                destination = str(archive.folder_path([selection["folder"]])) if scope == "folder" else str(archive.root)
-            if position == 0:
+                client = self._required()
+                decisions = dict(decisions or {})
+                client.unavailable_subfolders.clear()
+                scope = selection["scope"]
+                team = selection["team"]
+                if scope == "file":
+                    files = [item for item in client.files(selection["folder"]["id"])
+                             if item.get("key") == selection["file_key"]]
+                    if not files:
+                        raise FigmaError("The selected file was not found in this folder")
+                    archive = ArchiveIndex()
+                    destination = str(DOWNLOADS)
+                else:
+                    roots = client.top_folders(team["id"]) if scope == "team" else [selection["folder"]]
+                    files, folder_paths = client.walk_tree(roots)
+                    archive = TreeArchiveIndex(team)
+                    archive.prepare_folders(folder_paths)
+                    destination = str(archive.folder_path([selection["folder"]])) if scope == "folder" else str(archive.root)
+                files = [dict(file) for file in files if file.get("key")]
+                warning = (
+                    f"Figma did not expose subfolders for {len(client.unavailable_subfolders)} folder(s); this backup may be incomplete."
+                    if client.unavailable_subfolders else ""
+                )
+                run = {"selection": selection, "position": position, "decisions": decisions,
+                       "client": client, "files": files, "archive": archive,
+                       "destination": destination, "warning": warning}
                 items = [{"key": file["key"], "name": file.get("name") or "Untitled",
                           "status": "queued", "detail": ""}
-                         for file in files if file.get("key")]
+                         for file in files]
                 self._set(items=items, total=len(items), phase="downloading", destination=destination,
+                          warning=warning,
                           message="Download queue is ready" if items else "No supported files were found")
+                with self.lock:
+                    self._run = run
             for index, file in enumerate(files):
-                if index < position or not file.get("key"):
+                if index < position or decisions.get(file["key"]) == "cancel":
                     continue
                 position = index
                 with self.lock:
@@ -449,7 +464,8 @@ class Bridge:
                                     "position": index,
                                 }
                                 self.state["phase"] = "conflict"
-                                self._run = {"selection": selection, "position": index, "decisions": decisions}
+                                run.update(position=index, decisions=decisions)
+                                self._run = run
                             return
                     overwrite = decisions.get(file["key"]) == "overwrite"
 
@@ -485,10 +501,7 @@ class Bridge:
                     # A stop requested during scanning (or under the last file)
                     # must not report the run as completed.
                     self.state["phase"] = "stopped" if self.stop_requested else "done"
-                self.state["warning"] = (
-                    f"Figma did not expose subfolders for {len(client.unavailable_subfolders)} folder(s); this backup may be incomplete."
-                    if client.unavailable_subfolders else ""
-                )
+                self.state["warning"] = run["warning"]
                 self.state["running"] = False
                 self.state["finished"] = True
                 self.state["conflict"] = None
@@ -501,8 +514,8 @@ class Bridge:
 
     def resolve_conflict(self, choice: str) -> dict:
         """Answer a paused run: overwrite the existing file, keep both, or skip it."""
-        run = self._run
         with self.lock:
+            run = self._run
             pending = self.state.get("conflict")
             if not run or not pending:
                 raise FigmaError("No file is waiting for a decision")
@@ -514,8 +527,8 @@ class Bridge:
             self.state["phase"] = "downloading"
             self.state["running"] = True
             self.state["finished"] = False
-            self._run = {"selection": run["selection"], "position": run["position"], "decisions": decisions}
             resume = run["position"] + (1 if choice == "cancel" else 0)
+            self._run = {**run, "position": resume, "decisions": decisions}
             if choice == "cancel":
                 item = next((x for x in self.state["items"] if x["key"] == pending["key"]), None)
                 if item is not None:

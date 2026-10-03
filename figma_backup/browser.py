@@ -9,6 +9,7 @@ import re
 import os
 import plistlib
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -16,7 +17,7 @@ import threading
 import time
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
@@ -45,6 +46,8 @@ class Browser:
         self.headless = True
         self.use_headless_shell = False
         self.active_channel = None
+        # Sign-in, verification and retries must share one browser profile.
+        self.preferred_channel = None
         self.failed_system_channels: set[str] = set()
         self.installing = False
         self.install_error = ""
@@ -170,11 +173,11 @@ class Browser:
                        viewport={"width": 1400, "height": 900})
         if headless:
             options["args"] = ["--disable-blink-features=AutomationControlled"]
-        if not (headless and self.use_headless_shell):
-            skip_once = self.failed_system_channels.copy()
-            self.failed_system_channels.clear()
-            for channel, binary in self.system_browsers():
-                if channel in skip_once:
+        if self.preferred_channel != "chromium" and not (headless and self.use_headless_shell):
+            candidates = list(self.system_browsers())
+            candidates.sort(key=lambda item: item[0] != self.preferred_channel)
+            for channel, binary in candidates:
+                if channel in self.failed_system_channels:
                     continue
                 for attempt in range(2 if channel == "chrome" else 1):
                     try:
@@ -185,6 +188,7 @@ class Browser:
                             str(self.support / f"chromium-profile-{channel}"), **system_options,
                         )
                         self.active_channel = channel
+                        self.preferred_channel = channel
                         break
                     except Exception:
                         if attempt == 0 and channel == "chrome":
@@ -212,6 +216,7 @@ class Browser:
                     str(self.support / "chromium-profile"), **bundled_options,
                 )
             self.active_channel = "chromium"
+            self.preferred_channel = "chromium"
         if headless:
             self.context.add_init_script(
                 'Object.defineProperty(navigator, "webdriver", {get: () => undefined})'
@@ -309,14 +314,71 @@ class Browser:
             return
         # A previous interrupted extraction can leave a marker or partial tree.
         (dest / "INSTALLATION_COMPLETE").unlink(missing_ok=True)
-        with tempfile.TemporaryDirectory(prefix="figbak-pw-") as scratch:
+        cache = cls.browser_cache_dir().resolve()
+        cache.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="figbak-pw-", dir=cache) as scratch:
             bundle = Path(scratch) / f"{top}.zip"
             cls._download(f"{host}/{archive}", bundle, cls._bump_progress)
+            extracted = Path(scratch) / "browser"
             with zipfile.ZipFile(bundle) as data:
-                data.extractall(dest)
-        if not cls._browser_binary(name, dest):
-            raise RuntimeError(f"unexpected archive layout: {archive}")
-        (dest / "INSTALLATION_COMPLETE").write_text("", encoding="utf-8")
+                cls._extract_browser_archive(data, extracted)
+            if not cls._browser_binary(name, extracted):
+                raise RuntimeError(f"unexpected archive layout or non-executable browser: {archive}")
+            (extracted / "INSTALLATION_COMPLETE").write_text("", encoding="utf-8")
+            # Replace the entire incomplete tree: old extraction flattened macOS
+            # framework symlinks, so overwriting individual files cannot repair it.
+            if dest.parent.resolve() != cache or (not dest.is_symlink() and dest.resolve().parent != cache):
+                raise RuntimeError("browser cache path is outside the cache directory")
+            if dest.is_symlink():
+                dest.unlink()
+            elif dest.exists():
+                shutil.rmtree(dest)
+            extracted.replace(dest)
+
+    @staticmethod
+    def _extract_browser_archive(data: zipfile.ZipFile, destination: Path) -> None:
+        """Extract browser files, preserving Unix permissions and contained links."""
+        root = destination.resolve()
+        entries = []
+        for entry in data.infolist():
+            name = entry.filename.replace("\\", "/")
+            relative = PurePosixPath(name)
+            if (not relative.parts or relative.is_absolute() or PureWindowsPath(name).drive
+                    or ".." in relative.parts):
+                raise RuntimeError(f"unsafe browser archive path: {entry.filename}")
+            path = destination.joinpath(*relative.parts)
+            if not path.resolve().is_relative_to(root):
+                raise RuntimeError(f"unsafe browser archive path: {entry.filename}")
+            mode = entry.external_attr >> 16
+            entries.append((entry, path, mode))
+        # Write ordinary files before creating links so no extraction can traverse
+        # an archive-provided symlink. The destination is a fresh staging tree.
+        permissions = []
+        links = []
+        for entry, path, mode in entries:
+            if stat.S_ISLNK(mode):
+                if sys.platform == "win32":
+                    raise RuntimeError("unexpected symlink in Windows browser archive")
+                links.append((entry, path))
+                continue
+            if entry.is_dir() or stat.S_ISDIR(mode):
+                path.mkdir(parents=True, exist_ok=True)
+            else:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with data.open(entry) as source, path.open("wb") as sink:
+                    shutil.copyfileobj(source, sink)
+            if sys.platform != "win32" and mode & 0o777:
+                permissions.append((path, mode & 0o777))
+        for entry, path in links:
+            target = data.read(entry).decode("utf-8")
+            relative_target = PurePosixPath(target.replace("\\", "/"))
+            if (relative_target.is_absolute() or PureWindowsPath(target).drive
+                    or not (path.parent / target).resolve().is_relative_to(root)):
+                raise RuntimeError(f"unsafe browser archive symlink: {entry.filename}")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            os.symlink(target, path)
+        for path, mode in reversed(permissions):
+            path.chmod(mode)
 
     @classmethod
     def _browser_dir(cls, name: str, revision: str) -> Path:
@@ -350,10 +412,13 @@ class Browser:
             return (root / filename).is_file()
         if sys.platform == "darwin":
             if name.endswith("headless-shell"):
-                return (root / "chrome-headless-shell").is_file()
-            return any(path.is_file() for path in root.glob("*.app/Contents/MacOS/*"))
+                binary = root / "chrome-headless-shell"
+                return binary.is_file() and os.access(binary, os.X_OK)
+            return any(path.is_file() and os.access(path, os.X_OK)
+                       for path in root.glob("*.app/Contents/MacOS/*"))
         filename = "chrome-headless-shell" if name.endswith("headless-shell") else "chrome"
-        return (root / filename).is_file()
+        binary = root / filename
+        return binary.is_file() and os.access(binary, os.X_OK)
 
     @classmethod
     def _browser_installed(cls, name: str, directory: Path) -> bool:
@@ -565,8 +630,10 @@ class Browser:
     def recover_from_crash(self) -> None:
         if self.active_channel in ("chrome", "msedge"):
             self.failed_system_channels.add(self.active_channel)
+            self.preferred_channel = None
         else:
             self.use_headless_shell = True
+            self.preferred_channel = "chromium"
         self.stop()
 
     def _goto(self, url: str, **kwargs):
@@ -798,7 +865,7 @@ class Browser:
         destination, migrated = index.target(file, overwrite=overwrite)
         if destination.suffix.lower() != expected_extension:
             raise FigmaError(f"The backup path has an unexpected file type: {destination.name}")
-        if destination.exists():
+        if destination.exists() and not overwrite:
             verify_fig(destination)
             return {"status": "renamed" if migrated else "exists", "path": str(destination)}
         if self.context is None or not self.headless:
@@ -848,13 +915,38 @@ class Browser:
         if Path(download.suggested_filename).suffix.lower() != expected_extension:
             raise FigmaError(f"Figma returned an unexpected file: {download.suggested_filename}")
         temporary = destination.with_name(destination.name + ".partial")
+        original = None
+        keep_original = False
         try:
             progress("saving", "Saving to Downloads…")
             download.save_as(str(temporary))
             size = verify_fig(temporary)
+            if overwrite and destination.exists():
+                descriptor, backup = tempfile.mkstemp(prefix=f".{destination.name}.", suffix=".rollback",
+                                                      dir=destination.parent)
+                os.close(descriptor)
+                original = Path(backup)
+                shutil.copy2(destination, original)
             temporary.replace(destination)
+            if overwrite:
+                try:
+                    index.commit_overwrite(file, destination)
+                except Exception:
+                    if original is not None:
+                        try:
+                            original.replace(destination)
+                        except Exception as error:
+                            keep_original = True
+                            raise FigmaError(
+                                f"Could not restore the original backup; it remains at {original}"
+                            ) from error
+                    else:
+                        destination.unlink(missing_ok=True)
+                    raise
         finally:
             temporary.unlink(missing_ok=True)
+            if original is not None and not keep_original:
+                original.unlink(missing_ok=True)
         return {"status": "saved", "path": str(destination), "size": size}
 
 

@@ -227,13 +227,15 @@ class ArchiveIndex:
             # .fig. Re-point the entry instead of failing the run forever.
             name = self._available(Path(recorded).stem or clean_name(file.get("name")),
                                    extension, ignore=key)
+            if overwrite:
+                return self.downloads / name, False
             self.names[key] = name
             write_json(self.path, {"version": 1, "files": self.names})
             return self.downloads / name, False
         if overwrite:
             filename = f"{clean_name(file.get('name'))}{extension}"
-        else:
-            filename = self._available(clean_name(file.get("name")), extension)
+            return self.downloads / filename, False
+        filename = self._available(clean_name(file.get("name")), extension)
         destination = self.downloads / filename
         migrated = False
         if re.fullmatch(r"[A-Za-z0-9_-]+", key):
@@ -245,6 +247,18 @@ class ArchiveIndex:
         self.names[key] = filename
         write_json(self.path, {"version": 1, "files": self.names})
         return destination, migrated
+
+    def commit_overwrite(self, file: dict, destination: Path) -> None:
+        """Transfer path ownership only after the replacement has been saved."""
+        relative = destination.resolve().relative_to(self.downloads.resolve())
+        if len(relative.parts) != 1 or relative.suffix.lower() != native_extension(file.get("editorType")):
+            raise FigmaError("Invalid overwritten backup path")
+        normalized = unicodedata.normalize("NFC", relative.as_posix()).casefold()
+        names = {key: value for key, value in self.names.items()
+                 if unicodedata.normalize("NFC", Path(value).as_posix()).casefold() != normalized}
+        names[str(file["key"])] = relative.name
+        write_json(self.path, {"version": 1, "files": names})
+        self.names = names
 
 
 class TreeArchiveIndex:
@@ -361,6 +375,8 @@ class TreeArchiveIndex:
                         if other != key and Path(value).parent == relative}
             name = self._available_name(Path(recorded).stem or clean_name(file.get("name")),
                                         reserved, directory, extension)
+            if overwrite:
+                return directory / name, False
             self.files[key] = (relative / name).as_posix()
             self._save()
             return directory / name, False
@@ -371,12 +387,24 @@ class TreeArchiveIndex:
                     if Path(value).parent == relative}
         if overwrite:
             name = f"{clean_name(file.get('name'))}{extension}"
-        else:
-            name = self._available_name(clean_name(file.get("name")), reserved, directory, extension)
+            return directory / name, False
+        name = self._available_name(clean_name(file.get("name")), reserved, directory, extension)
         destination = directory / name
         self.files[key] = (relative / name).as_posix()
         self._save()
         return destination, False
+
+    def commit_overwrite(self, file: dict, destination: Path) -> None:
+        """Record the replacement without retaining another file's ownership."""
+        relative = destination.resolve().relative_to(self.root.resolve())
+        if relative.suffix.lower() != native_extension(file.get("editorType")):
+            raise FigmaError("Invalid overwritten backup path")
+        normalized = unicodedata.normalize("NFC", relative.as_posix()).casefold()
+        files = {key: value for key, value in self.files.items()
+                 if unicodedata.normalize("NFC", Path(value).as_posix()).casefold() != normalized}
+        files[str(file["key"])] = relative.as_posix()
+        write_json(self.path, {"version": 1, "folders": self.folders, "files": files})
+        self.files = files
 
 
 class EditorTypeCache:
@@ -435,6 +463,8 @@ class FigmaClient:
         # TLS handshake per call dominated the browse time.
         self._session = requests.Session() if request_get is None else None
         self.folder_api = "v2"
+        self._folder_apis: dict[str, str] = {}
+        self._team_apis: dict[str, str] = {}
         self.unavailable_subfolders: set[str] = set()
         self._type_store = type_cache or EditorTypeCache()
         self._editor_type_cache: dict[str, str] = self._type_store.types
@@ -505,25 +535,36 @@ class FigmaClient:
         return self.get("/v1/me")
 
     def top_folders(self, team_id: str) -> list[dict]:
-        team_id = quote(str(team_id), safe="")
+        team_id = str(team_id)
+        encoded_id = quote(team_id, safe="")
         try:
-            self.folder_api = "v2"
-            return self._items(self.get(f"/v2/teams/{team_id}/folders"), "folders")
+            folders = self._items(self.get(f"/v2/teams/{encoded_id}/folders"), "folders")
+            mode = "v2"
         except FigmaError as new_error:
             if new_error.status not in (403, 404):
                 raise
             try:
-                projects = self._items(self.get(f"/v1/teams/{team_id}/projects"), "projects")
-                self.folder_api = "v1"
-                return projects
+                folders = self._items(self.get(f"/v1/teams/{encoded_id}/projects"), "projects")
+                mode = "v1"
             except FigmaError as old_error:
                 raise FigmaError(f"Team folders are unavailable. Folders API: {new_error}. Projects API: {old_error}") from old_error
+        # Browsing another team must not change the API of folders already queued.
+        self._team_apis[team_id] = mode
+        self._folder_apis.update({str(folder["id"]): mode for folder in folders})
+        self.folder_api = mode  # Compatibility for callers inspecting the last listing.
+        return folders
+
+    def folder_api_for_team(self, team_id: str) -> str:
+        return self._team_apis.get(str(team_id), "v2")
 
     def subfolders(self, folder_id: str) -> list[dict]:
-        if self.folder_api == "v1" or str(folder_id) in self.unavailable_subfolders:
+        folder_id = str(folder_id)
+        if self._folder_apis.get(folder_id, "v2") == "v1" or folder_id in self.unavailable_subfolders:
             return []
         try:
-            return self._items(self.get(f"/v2/folders/{quote(str(folder_id), safe='')}/folders"), "folders")
+            folders = self._items(self.get(f"/v2/folders/{quote(folder_id, safe='')}/folders"), "folders")
+            self._folder_apis.update({str(folder["id"]): "v2" for folder in folders})
+            return folders
         except FigmaError as error:
             if error.status != 451:
                 raise
@@ -531,8 +572,9 @@ class FigmaClient:
             return []
 
     def files(self, folder_id: str) -> list[dict]:
+        mode = self._folder_apis.get(str(folder_id), "v2")
         folder_id = quote(str(folder_id), safe="")
-        endpoint = f"/v1/projects/{folder_id}/files" if self.folder_api == "v1" else f"/v2/folders/{folder_id}/files"
+        endpoint = f"/v1/projects/{folder_id}/files" if mode == "v1" else f"/v2/folders/{folder_id}/files"
         return self._items(self.get(endpoint), "files")
 
     def all_files(self, folder: dict) -> list[dict]:

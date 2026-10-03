@@ -103,7 +103,7 @@ export function installPreviewBridge() {
         has_token: true, teams: previewTeams, preferences,
         browser: { ...browserState },
         downloads: '/Users/you/Downloads',
-        version: '1.0.0',
+        version: '1.0.1',
       }),
       discover_teams: async () => lag().then(() => ({ teams: previewTeams, auth_required: false })),
       save_preferences: async changes => (preferences = { ...preferences, ...changes }),

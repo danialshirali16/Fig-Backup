@@ -63,8 +63,9 @@ All three setup checks are required before the first backup. After setup, backup
   Unsupported file types are skipped and don't count toward the progress percent.
 
 Team and folder backups go to `Downloads/Fig Backup/<Team>/<Folder>/…`. Individual files go
-directly to `Downloads`. If a filename already exists, Fig Backup adds a number instead of
-overwriting it.
+directly to `Downloads`. If a different file already occupies the filename, Fig Backup asks whether
+to overwrite it, keep both copies with a numbered name, or skip that file. A copy already indexed
+for the same Figma file is reported as already saved.
 
 ## How it works
 
